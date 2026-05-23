@@ -60,7 +60,7 @@ func New(name string) (Provider, error) {
 	case "deepseek":
 		return nil, fmt.Errorf("deepseek provider not yet implemented — see HANDOFF.md")
 	case "anthropic":
-		return nil, fmt.Errorf("anthropic provider not yet implemented — see HANDOFF.md")
+		return NewAnthropic("")
 	default:
 		return nil, fmt.Errorf("unknown provider: %s", name)
 	}
