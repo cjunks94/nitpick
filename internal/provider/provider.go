@@ -53,14 +53,16 @@ const (
 )
 
 // New returns a provider by name. Register new implementations here.
-func New(name string) (Provider, error) {
+// modelID is honored only by providers that take a model (anthropic, deepseek);
+// pass "" to use the provider's default.
+func New(name, modelID string) (Provider, error) {
 	switch name {
 	case "", "stub":
 		return Stub{}, nil
 	case "deepseek":
 		return nil, fmt.Errorf("deepseek provider not yet implemented — see HANDOFF.md")
 	case "anthropic":
-		return NewAnthropic("")
+		return NewAnthropic(modelID)
 	default:
 		return nil, fmt.Errorf("unknown provider: %s", name)
 	}

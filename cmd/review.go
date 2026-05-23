@@ -51,7 +51,7 @@ func Review(ctx context.Context, args []string) error {
 		return fmt.Errorf("parse diff: %w", err)
 	}
 
-	p, err := provider.New(*providerName)
+	p, err := provider.New(*providerName, cfg.Model)
 	if err != nil {
 		return err
 	}
