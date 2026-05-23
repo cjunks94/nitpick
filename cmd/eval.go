@@ -16,7 +16,7 @@ func Eval(ctx context.Context, args []string) error {
 	casesPath := flags.String("cases", "eval/cases/cases.jsonl", "path to cases.jsonl")
 	providerName := flags.String("provider", "stub", "stub | deepseek | anthropic")
 	outPath := flags.String("out", "eval/REPORT.md", "report output path")
-	noGuidelines := flags.Bool("no-guidelines", false, "skip loading per-repo CLAUDE.md (for variance baseline)")
+	guidelines := flags.Bool("guidelines", false, "load per-repo CLAUDE.md from eval/cases/repos/ as cached context (opt-in; default off after 3v3 A/B showed no win)")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -24,7 +24,7 @@ func Eval(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := eval.Run(ctx, *casesPath, *outPath, p, !*noGuidelines); err != nil {
+	if err := eval.Run(ctx, *casesPath, *outPath, p, *guidelines); err != nil {
 		return err
 	}
 	fmt.Printf("nitpick: report written to %s\n", *outPath)
