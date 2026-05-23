@@ -10,9 +10,12 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/cjunks94/nitpick/internal/diff"
@@ -49,6 +52,8 @@ func Run(ctx context.Context, casesPath, outPath string, p provider.Provider) er
 		return fmt.Errorf("load cases: %w", err)
 	}
 
+	reposDir := filepath.Join(filepath.Dir(casesPath), "repos")
+
 	var results []CaseResult
 	for _, c := range cases {
 		raw, err := os.ReadFile(c.DiffPath)
@@ -59,7 +64,14 @@ func Run(ctx context.Context, casesPath, outPath string, p provider.Provider) er
 		if err != nil {
 			return fmt.Errorf("parse %s: %w", c.DiffPath, err)
 		}
-		res, err := p.Review(ctx, provider.ReviewRequest{Hunks: hunks})
+		guidelines, err := loadRepoGuidelines(reposDir, c.Repo)
+		if err != nil {
+			return fmt.Errorf("load guidelines for %s: %w", c.Repo, err)
+		}
+		res, err := p.Review(ctx, provider.ReviewRequest{
+			Hunks:          hunks,
+			RepoGuidelines: guidelines,
+		})
 		if err != nil {
 			return fmt.Errorf("review PR #%d: %w", c.PR, err)
 		}
@@ -101,6 +113,22 @@ func score(c Case, res provider.ReviewResult) CaseResult {
 		}
 	}
 	return cr
+}
+
+// loadRepoGuidelines returns the contents of repos/<owner>__<repo>.md if it
+// exists, nil otherwise. A missing file is not an error — most repos don't
+// have a CLAUDE.md, and the provider handles a nil RepoGuidelines fine.
+func loadRepoGuidelines(reposDir, repo string) ([]byte, error) {
+	sanitized := strings.ReplaceAll(repo, "/", "__")
+	path := filepath.Join(reposDir, sanitized+".md")
+	b, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return b, nil
 }
 
 func loadCases(path string) ([]Case, error) {
