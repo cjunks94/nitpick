@@ -1,0 +1,292 @@
+diff --git a/app/controllers/api/v1/base_controller.rb b/app/controllers/api/v1/base_controller.rb
+index 65853f3..f2fe1e6 100644
+--- a/app/controllers/api/v1/base_controller.rb
++++ b/app/controllers/api/v1/base_controller.rb
+@@ -9,6 +9,9 @@ class BaseController < ActionController::API
+       before_action :set_org
+ 
+       rescue_from ActiveRecord::RecordNotFound, with: :not_found
++      rescue_from ActiveRecord::RecordInvalid, with: :unprocessable
++      rescue_from ArgumentError, with: :bad_request_with_message
++      rescue_from Discard::RecordNotDiscarded, with: :unprocessable_discard
+       rescue_from Pundit::NotAuthorizedError, with: :forbidden
+ 
+       private
+@@ -54,6 +57,11 @@ def not_found
+         render_error("Resource not found", :not_found, code: "not_found")
+       end
+ 
++      def unprocessable(exception)
++        render_error(exception.record.errors.full_messages.join(", "),
++                     :unprocessable_entity, code: "validation_failed")
++      end
++
+       def forbidden(exception)
+         render_error("Not authorized to #{exception.query.to_s.chomp('?')} this resource",
+                      :forbidden, code: "forbidden")
+@@ -70,6 +78,14 @@ def bad_request
+         render_error("Invalid request parameters", :bad_request, code: "bad_request")
+       end
+ 
++      def bad_request_with_message(exception)
++        render_error(exception.message, :bad_request, code: "bad_request")
++      end
++
++      def unprocessable_discard(exception)
++        render_error(exception.message, :unprocessable_entity, code: "discard_failed")
++      end
++
+       def pagy_meta(pagy_obj)
+         {
+           current_page: pagy_obj.page,
+diff --git a/app/controllers/api/v1/widgets_controller.rb b/app/controllers/api/v1/widgets_controller.rb
+index 3fc090e..f44aae6 100644
+--- a/app/controllers/api/v1/widgets_controller.rb
++++ b/app/controllers/api/v1/widgets_controller.rb
+@@ -2,6 +2,7 @@ module Api
+   module V1
+     class WidgetsController < BaseController
+       def index
++        authorize Widget
+         widgets = Widget.for_org(@org).kept.order(:name)
+         pagy_obj, records = pagy(:offset, widgets)
+ 
+@@ -12,12 +13,47 @@ def index
+       end
+ 
+       def show
+-        widget = Widget.for_org(@org).kept.find_by!(uuid: params[:id])
++        widget = find_widget
++        authorize widget
+         render json: { data: serialize(widget) }
+       end
+ 
++      def create
++        widget = Widget.new(create_params)
++        widget.org = @org
++        authorize widget
++        widget.save!
++        render json: { data: serialize(widget) }, status: :created
++      end
++
++      def update
++        widget = find_widget
++        authorize widget
++        widget.update!(update_params)
++        render json: { data: serialize(widget) }
++      end
++
++      def destroy
++        widget = find_widget
++        authorize widget
++        widget.discard!
++        head :no_content
++      end
++
+       private
+ 
++      def find_widget
++        Widget.for_org(@org).kept.find_by!(uuid: params[:id])
++      end
++
++      def create_params
++        params.require(:widget).permit(:name, :description, :widget_type, :is_public, config: {}, tags: [])
++      end
++
++      def update_params
++        params.require(:widget).permit(:name, :description, :is_public, config: {}, tags: [])
++      end
++
+       def serialize(widget)
+         {
+           uuid: widget.uuid,
+diff --git a/config/routes.rb b/config/routes.rb
+index 2ce0295..4053f40 100644
+--- a/config/routes.rb
++++ b/config/routes.rb
+@@ -22,7 +22,7 @@
+         resources :runs, only: [ :index ], controller: "runs"
+       end
+       resources :mappings, only: [ :index, :show ]
+-      resources :widgets, only: [ :index, :show ]
++      resources :widgets, only: [ :index, :show, :create, :update, :destroy ]
+       resources :runs, only: [ :show ]
+     end
+   end
+diff --git a/spec/requests/api/v1/widgets_spec.rb b/spec/requests/api/v1/widgets_spec.rb
+index c8306db..ef819a6 100644
+--- a/spec/requests/api/v1/widgets_spec.rb
++++ b/spec/requests/api/v1/widgets_spec.rb
+@@ -1,10 +1,14 @@
+ require "swagger_helper"
+ 
+-# rubocop:disable RSpec/EmptyExampleGroup, RSpec/VariableName
++# rubocop:disable RSpec/EmptyExampleGroup, RSpec/VariableName, RSpec/ScatteredSetup
+ RSpec.describe "API V1 Widgets", type: :request do
+   let!(:org) { create(:org) }
++  let!(:owner_user) { create(:user, email: "owner@test.com") }
+   let(:Authorization) { "Basic #{Base64.strict_encode64('admin:s3cret')}" }
+ 
++  # Ensure owner membership exists so pundit_user fallback works
++  before { create(:membership, user: owner_user, org: org, role: "owner") }
++
+   around do |example|
+     ClimateControl.modify("EXPORTEE_AUTH_USER" => "admin", "EXPORTEE_AUTH_PASSWORD" => "s3cret") do
+       example.run
+@@ -34,6 +38,63 @@
+         end
+       end
+     end
++
++    post "Create a widget" do
++      tags "Widgets"
++      consumes "application/json"
++      produces "application/json"
++      parameter name: :widget, in: :body, schema: {
++        type: :object,
++        properties: {
++          widget: {
++            type: :object,
++            properties: {
++              name: { type: :string },
++              widget_type: { type: :string, enum: %w[rename filter mask_ssn mask_email] },
++              description: { type: :string },
++              config: { type: :object },
++              tags: { type: :array, items: { type: :string } },
++              is_public: { type: :boolean }
++            },
++            required: %w[name widget_type]
++          }
++        }
++      }
++
++      response "201", "widget created" do
++        schema type: :object, properties: {
++          data: { "$ref": "#/components/schemas/widget" }
++        }, required: %w[data]
++
++        let(:widget) do
++          {
++            widget: {
++              name: "mask-pii-email",
++              widget_type: "mask_email",
++              description: "Masks email local part",
++              config: { "on" => "email" },
++              tags: %w[pii compliance],
++              is_public: false
++            }
++          }
++        end
++
++        run_test! do |response|
++          data = JSON.parse(response.body)["data"]
++          expect(data["name"]).to eq("mask-pii-email")
++          expect(data["widget_type"]).to eq("mask_email")
++          expect(data["tags"]).to eq(%w[pii compliance])
++          expect(data["config"]).to eq({ "on" => "email" })
++        end
++      end
++
++      response "422", "invalid params" do
++        schema "$ref": "#/components/schemas/error"
++
++        let(:widget) { { widget: { name: "", widget_type: "mask_email" } } }
++        run_test!
++      end
++    end
+   end
+ 
+   path "/api/v1/widgets/{id}" do
+@@ -47,22 +108,87 @@
+           data: { "$ref": "#/components/schemas/widget" }
+         }, required: %w[data]
+ 
+-        let(:widget) { create(:widget, org: org) }
+-        let(:id) { widget.uuid }
++        let(:existing_widget) { create(:widget, org: org) }
++        let(:id) { existing_widget.uuid }
++
++        run_test! do |response|
++          data = JSON.parse(response.body)["data"]
++          expect(data["uuid"]).to eq(existing_widget.uuid)
++          expect(data["widget_type"]).to eq(existing_widget.widget_type)
++        end
++      end
++
++      response "404", "widget not found" do
++        schema "$ref": "#/components/schemas/error"
++        let(:id) { "nonexistent-uuid" }
++        run_test!
++      end
++    end
++
++    patch "Update a widget" do
++      tags "Widgets"
++      consumes "application/json"
++      produces "application/json"
++      parameter name: :id, in: :path, type: :string, description: "Widget UUID"
++      parameter name: :widget, in: :body, schema: {
++        type: :object,
++        properties: {
++          widget: {
++            type: :object,
++            properties: {
++              name: { type: :string },
++              description: { type: :string },
++              config: { type: :object },
++              tags: { type: :array, items: { type: :string } },
++              is_public: { type: :boolean }
++            }
++          }
++        }
++      }
++
++      response "200", "widget updated" do
++        schema type: :object, properties: {
++          data: { "$ref": "#/components/schemas/widget" }
++        }, required: %w[data]
++
++        let(:existing_widget) { create(:widget, org: org, tags: []) }
++        let(:id) { existing_widget.uuid }
++        let(:widget) { { widget: { tags: %w[pii sensitive], description: "Updated" } } }
+ 
+         run_test! do |response|
+           data = JSON.parse(response.body)["data"]
+-          expect(data["uuid"]).to eq(widget.uuid)
+-          expect(data["widget_type"]).to eq(widget.widget_type)
++          expect(data["tags"]).to eq(%w[pii sensitive])
++          expect(data["description"]).to eq("Updated")
+         end
+       end
+ 
+       response "404", "widget not found" do
+         schema "$ref": "#/components/schemas/error"
++        let(:id) { "nonexistent-uuid" }
++        let(:widget) { { widget: { description: "nope" } } }
++        run_test!
++      end
++    end
++
++    delete "Delete a widget" do
++      tags "Widgets"
++      produces "application/json"
++      parameter name: :id, in: :path, type: :string, description: "Widget UUID"
++
++      response "204", "widget deleted" do
++        let(:existing_widget) { create(:widget, org: org) }
++        let(:id) { existing_widget.uuid }
++
++        run_test! do
++          expect(existing_widget.reload).to be_discarded
++        end
++      end
++
++      response "404", "widget not found" do
+         let(:id) { "nonexistent-uuid" }
+         run_test!
+       end
+     end
+   end
+ end
+-# rubocop:enable RSpec/EmptyExampleGroup, RSpec/VariableName
++# rubocop:enable RSpec/EmptyExampleGroup, RSpec/VariableName, RSpec/ScatteredSetup

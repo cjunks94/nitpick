@@ -1,0 +1,86 @@
+diff --git a/src/agentic_portfolio/web/static/style.css b/src/agentic_portfolio/web/static/style.css
+index f6c4823..793228c 100644
+--- a/src/agentic_portfolio/web/static/style.css
++++ b/src/agentic_portfolio/web/static/style.css
+@@ -70,6 +70,20 @@ a:hover { color: var(--amber-bright); }
+     margin-bottom: 12px;
+ }
+ 
++/* Three low-density panels (Run Progress, Watchlist, System) tile across
++   the bottom; gap replaces the per-panel margin so the row sits flush. */
++.panel-grid-3 {
++    display: grid;
++    grid-template-columns: repeat(3, minmax(0, 1fr));
++    gap: 12px;
++    margin-bottom: 12px;
++}
++
++.panel-grid-3 .panel {
++    margin-bottom: 0;
++    min-width: 0;
++}
++
+ .panel-title {
+     background: var(--bg);
+     color: var(--amber);
+@@ -373,4 +387,6 @@ button.run-now:disabled {
+     .panel-body { overflow-x: auto; }
+     table.data { width: max-content; min-width: 100%; }
+     table.data td, table.data th { white-space: nowrap; }
++
++    .panel-grid-3 { grid-template-columns: 1fr; gap: 12px; }
+ }
+diff --git a/src/agentic_portfolio/web/templates/dashboard.html b/src/agentic_portfolio/web/templates/dashboard.html
+index e128e2a..571c7e3 100644
+--- a/src/agentic_portfolio/web/templates/dashboard.html
++++ b/src/agentic_portfolio/web/templates/dashboard.html
+@@ -45,13 +45,6 @@
+ }
+ </script>
+ 
+-<div class="panel">
+-    <div class="panel-title">RUN PROGRESS &nbsp;<span style="color: var(--text-dim);">— LIVE QUEUE & CANCEL</span></div>
+-    <div class="panel-body" id="progress-panel-body" hx-get="/fragment/progress" hx-trigger="every 3s" hx-swap="innerHTML">
+-        {% include "_progress.html" %}
+-    </div>
+-</div>
+-
+ <div class="panel">
+     <div class="panel-title">PENDING ORDERS &nbsp;<span style="color: var(--text-dim);">— APPROVE TO EXECUTE</span></div>
+     <div class="panel-body" id="pending-panel-body" hx-get="/fragment/pending" hx-trigger="every 5s" hx-swap="innerHTML">
+@@ -98,17 +91,26 @@
+     </div>
+ </div>
+ 
+-<div class="panel">
+-    <div class="panel-title">WATCHLIST &nbsp;<span style="color: var(--text-dim);">— TICKERS THE WEEKLY CRON ANALYZES</span></div>
+-    <div class="panel-body" id="watchlist-panel-body" hx-get="/fragment/watchlist" hx-trigger="every 30s" hx-swap="innerHTML">
+-        {% include "_watchlist.html" %}
++<div class="panel-grid-3">
++    <div class="panel">
++        <div class="panel-title">RUN PROGRESS &nbsp;<span style="color: var(--text-dim);">— LIVE QUEUE & CANCEL</span></div>
++        <div class="panel-body" id="progress-panel-body" hx-get="/fragment/progress" hx-trigger="every 3s" hx-swap="innerHTML">
++            {% include "_progress.html" %}
++        </div>
+     </div>
+-</div>
+ 
+-<div class="panel">
+-    <div class="panel-title">SYSTEM</div>
+-    <div class="panel-body" hx-get="/fragment/system" hx-trigger="every 5s" hx-swap="innerHTML">
+-        {% include "_system.html" %}
++    <div class="panel">
++        <div class="panel-title">WATCHLIST &nbsp;<span style="color: var(--text-dim);">— TICKERS THE WEEKLY CRON ANALYZES</span></div>
++        <div class="panel-body" id="watchlist-panel-body" hx-get="/fragment/watchlist" hx-trigger="every 30s" hx-swap="innerHTML">
++            {% include "_watchlist.html" %}
++        </div>
++    </div>
++
++    <div class="panel">
++        <div class="panel-title">SYSTEM</div>
++        <div class="panel-body" hx-get="/fragment/system" hx-trigger="every 5s" hx-swap="innerHTML">
++            {% include "_system.html" %}
++        </div>
+     </div>
+ </div>
+ {% endblock %}

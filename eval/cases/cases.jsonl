@@ -1,0 +1,29 @@
+// 20 labeled PRs across resume-improvements, panoptrain, agentic-portfolio, hush-hush, exportee-rails.
+// Mix: 5 bug fixes, 5 features, 5 refactors, 5 chores. Chores and clean fixes are silence cases.
+// Severities: "critical" = real bug/security (bot MUST catch); "useful" = real idiom/perf/maintainability.
+// Lines are new-file line numbers; matcher allows ±3 wiggle.
+//
+// --- Bug fixes ---
+{"pr":87,"repo":"cjunks94/resume-improvements","diff_path":"eval/cases/pr-87.diff","expected":[{"file":"particle-scene.js","line":65,"severity":"useful","category":"defensive","note":"isLightBg parses hex and rgb()/rgba() but not hsl()/hsla(); browsers may serialize --c-bg as hsl() so light-theme detection silently breaks"}]}
+{"pr":82,"repo":"cjunks94/resume-improvements","diff_path":"eval/cases/pr-82.diff","expected":[]}
+{"pr":68,"repo":"cjunks94/resume-improvements","diff_path":"eval/cases/pr-68.diff","expected":[]}
+{"pr":44,"repo":"cjunks94/panoptrain","diff_path":"eval/cases/pr-44.diff","expected":[]}
+{"pr":4,"repo":"cjunks94/hush-hush","diff_path":"eval/cases/pr-4.diff","expected":[]}
+// --- Features ---
+{"pr":29,"repo":"cjunks94/agentic-portfolio","diff_path":"eval/cases/pr-29.diff","expected":[{"file":"src/agentic_portfolio/web/api.py","line":589,"severity":"useful","category":"security","note":"_make_broker docstring documents demo_mode fail-safe contract but doesn't enforce it; future LiveBroker addition could bypass demo gate without a regression check"}]}
+{"pr":25,"repo":"cjunks94/agentic-portfolio","diff_path":"eval/cases/pr-25.diff","expected":[]}
+{"pr":56,"repo":"cjunks94/panoptrain","diff_path":"eval/cases/pr-56.diff","expected":[{"file":"packages/client/src/lib/tafCurrentPeriod.ts","line":28,"severity":"useful","category":"correctness","note":"selection loop picks last in iteration order, not latest timeFrom — assumes upstream returns basePeriods sorted ascending"}]}
+{"pr":121,"repo":"cjunks94/exportee-rails","diff_path":"eval/cases/pr-121.diff","expected":[{"file":"app/services/sources/salesforce_adapter.rb","line":45,"severity":"useful","category":"perf","note":"extract accumulates entire SOQL result in memory; a multi-million-row Account export would OOM the worker"}]}
+{"pr":101,"repo":"cjunks94/exportee-rails","diff_path":"eval/cases/pr-101.diff","expected":[{"file":"app/controllers/api/v1/base_controller.rb","line":83,"severity":"useful","category":"security","note":"bad_request_with_message renders raw exception.message from ArgumentError; risks leaking internal context (CLAUDE.md: error messages must not leak internal details)"}]}
+// --- Refactors ---
+{"pr":28,"repo":"cjunks94/agentic-portfolio","diff_path":"eval/cases/pr-28.diff","expected":[]}
+{"pr":27,"repo":"cjunks94/agentic-portfolio","diff_path":"eval/cases/pr-27.diff","expected":[]}
+{"pr":59,"repo":"cjunks94/panoptrain","diff_path":"eval/cases/pr-59.diff","expected":[{"file":"packages/client/src/lib/scheduleIdle.ts","line":18,"severity":"useful","category":"correctness","note":"setTimeout fallback hardcodes 1ms and ignores the timeoutMs parameter; docstring promises 'soon-ish' upper bound but fallback fires next tick regardless of caller intent"}]}
+{"pr":54,"repo":"cjunks94/panoptrain","diff_path":"eval/cases/pr-54.diff","expected":[]}
+{"pr":117,"repo":"cjunks94/exportee-rails","diff_path":"eval/cases/pr-117.diff","expected":[{"file":"app/services/transforms/data_frame_pipeline.rb","line":100,"severity":"useful","category":"security","note":"const_get with widget_name from YAML config can resolve to unintended constants; safer to dispatch via an explicit widget→class hash"}]}
+// --- Chores / dep bumps — bot should stay silent ---
+{"pr":69,"repo":"cjunks94/resume-improvements","diff_path":"eval/cases/pr-69.diff","expected":[]}
+{"pr":64,"repo":"cjunks94/resume-improvements","diff_path":"eval/cases/pr-64.diff","expected":[]}
+{"pr":57,"repo":"cjunks94/resume-improvements","diff_path":"eval/cases/pr-57.diff","expected":[]}
+{"pr":10,"repo":"cjunks94/hush-hush","diff_path":"eval/cases/pr-10.diff","expected":[]}
+{"pr":9,"repo":"cjunks94/hush-hush","diff_path":"eval/cases/pr-9.diff","expected":[]}

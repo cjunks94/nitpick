@@ -1,0 +1,615 @@
+diff --git a/Gemfile b/Gemfile
+index ac1fad1..1a00db7 100644
+--- a/Gemfile
++++ b/Gemfile
+@@ -62,6 +62,9 @@ gem "fugit"
+ # Disable with EXPORTEE_POLARS=0 to fall back to Ruby CSV stdlib
+ gem "polars-df"
+ 
++# Salesforce REST API client
++gem "restforce"
++
+ # Windows does not include zoneinfo files, so bundle the tzinfo-data gem
+ gem "tzinfo-data", platforms: %i[ windows jruby ]
+ 
+diff --git a/Gemfile.lock b/Gemfile.lock
+index c325a05..ad79440 100644
+--- a/Gemfile.lock
++++ b/Gemfile.lock
+@@ -214,6 +214,16 @@ GEM
+       railties (>= 6.1.0)
+     faker (3.8.0)
+       i18n (>= 1.8.11, < 2)
++    faraday (2.14.1)
++      faraday-net_http (>= 2.0, < 3.5)
++      json
++      logger
++    faraday-follow_redirects (0.5.0)
++      faraday (>= 1, < 3)
++    faraday-multipart (1.2.0)
++      multipart-post (~> 2.0)
++    faraday-net_http (3.4.2)
++      net-http (~> 0.5)
+     ferrum (0.17.2)
+       addressable (~> 2.5)
+       base64 (~> 0.2)
+@@ -226,6 +236,8 @@ GEM
+       raabro (~> 1.4)
+     globalid (1.3.0)
+       activesupport (>= 6.1)
++    hashie (5.1.0)
++      logger
+     i18n (1.14.8)
+       concurrent-ruby (~> 1.0)
+     io-console (0.8.2)
+@@ -265,6 +277,9 @@ GEM
+     mini_mime (1.1.5)
+     minitest (5.27.0)
+     msgpack (1.8.0)
++    multipart-post (2.4.1)
++    net-http (0.9.1)
++      uri (>= 0.11.1)
+     net-imap (0.6.3)
+       date
+       net-protocol
+@@ -377,6 +392,13 @@ GEM
+     responders (3.2.0)
+       actionpack (>= 7.0)
+       railties (>= 7.0)
++    restforce (8.0.1)
++      faraday (>= 1.1.0, < 3.0.0)
++      faraday-follow_redirects (< 0.6.0)
++      faraday-multipart (>= 1.0.0, < 2.0.0)
++      faraday-net_http (< 4.0.0)
++      hashie (>= 1.2.0, < 6.0)
++      jwt (>= 1.5.6)
+     rexml (3.4.4)
+     rspec-core (3.13.6)
+       rspec-support (~> 3.13.0)
+@@ -548,6 +570,7 @@ DEPENDENCIES
+   pundit
+   pundit-matchers
+   rails (~> 7.2.3, >= 7.2.3.1)
++  restforce
+   rspec-its
+   rspec-rails (~> 7.0)
+   rswag-api
+diff --git a/app/models/connection.rb b/app/models/connection.rb
+index 1a3ce5e..074e4ff 100644
+--- a/app/models/connection.rb
++++ b/app/models/connection.rb
+@@ -6,7 +6,7 @@ class Connection < ApplicationRecord
+ 
+   has_encrypted :connection_config, type: :json
+ 
+-  enum :db_type, { mysql: "mysql", postgresql: "postgresql", sqlite: "sqlite" }
++  enum :db_type, { mysql: "mysql", postgresql: "postgresql", sqlite: "sqlite", salesforce: "salesforce" }
+   enum :connection_status,
+        { unknown: "unknown", ok: "ok", error: "error" },
+        prefix: :connection
+diff --git a/app/services/sources/base_adapter.rb b/app/services/sources/base_adapter.rb
+index b4ab9fd..c02ce7c 100644
+--- a/app/services/sources/base_adapter.rb
++++ b/app/services/sources/base_adapter.rb
+@@ -7,6 +7,8 @@ module Sources
+   #   1. Create Sources::FooAdapter < Sources::BaseAdapter
+   #   2. Implement all four methods
+   #   3. Register: Sources::Registry.register(:foo, Sources::FooAdapter)
++  class AdapterError < StandardError; end
++
+   class BaseAdapter
+     attr_reader :connection
+ 
+diff --git a/app/services/sources/salesforce_adapter.rb b/app/services/sources/salesforce_adapter.rb
+new file mode 100644
+index 0000000..9e0758f
+--- /dev/null
++++ b/app/services/sources/salesforce_adapter.rb
+@@ -0,0 +1,87 @@
++module Sources
++  # Salesforce source adapter using the Restforce gem.
++  # Supports OAuth2 username-password flow for authentication,
++  # SOQL queries for extraction, and describe calls for introspection.
++  #
++  # Connection config expected:
++  #   instance_url: "https://client.my.salesforce.com"
++  #   api_version: "61.0" (optional, defaults to Restforce default)
++  #   sandbox: false (optional, switches login URL)
++  #
++  # Credentials resolved at runtime via from_secret:
++  #   client_id, client_secret, username, password, security_token
++  class SalesforceAdapter < BaseAdapter
++    def probe
++      client.describe("Account")
++      { ok: true, error: nil }
++    rescue Restforce::Error, Faraday::Error => e
++      { ok: false, error: e.message }
++    end
++
++    def introspect_schema
++      # List queryable standard + custom objects, then describe each
++      sobjects = client.describe
++      queryable = sobjects.select { |s| s["queryable"] }
++
++      queryable.map do |sobject|
++        describe = client.describe(sobject["name"])
++        {
++          table: sobject["name"],
++          columns: describe["fields"].map do |f|
++            {
++              name: f["name"],
++              type: f["type"],
++              nullable: f["nillable"]
++            }
++          end
++        }
++      end
++    rescue Restforce::Error, Faraday::Error => e
++      raise Sources::AdapterError, "Salesforce introspection failed: #{e.message}"
++    end
++
++    def extract(query)
++      rows = []
++      client.query(query).each { |record| rows << normalize_record(record) }
++      rows
++    rescue Restforce::Error, Faraday::Error => e
++      raise Sources::AdapterError, "Salesforce query failed: #{e.message}"
++    end
++
++    # Salesforce doesn't have a COPY-like streaming protocol.
++    # query_all includes archived/deleted records when needed.
++    def extract_streaming(query)
++      extract(query)
++    end
++
++    private
++
++    def client
++      @client ||= Restforce.new(
++        username: credentials["username"],
++        password: password_with_token,
++        client_id: credentials["client_id"],
++        client_secret: credentials["client_secret"],
++        instance_url: config["instance_url"],
++        api_version: config.fetch("api_version", nil),
++        host: config["sandbox"] ? "test.salesforce.com" : "login.salesforce.com",
++        authentication_retries: 1,
++        request_headers: { "Sforce-Query-Options" => "batchSize=2000" }
++      ).tap(&:authenticate!)
++    end
++
++    def credentials
++      @credentials ||= connection.connection_config.fetch("credentials", config)
++    end
++
++    def password_with_token
++      [ credentials["password"], credentials["security_token"] ].compact.join
++    end
++
++    # Restforce returns Restforce::SObject (Hashie::Mash subclass).
++    # Normalize to plain hash and strip Salesforce metadata.
++    def normalize_record(record)
++      record.to_hash.except("attributes")
++    end
++  end
++end
+diff --git a/config/initializers/source_adapters.rb b/config/initializers/source_adapters.rb
+index 1fccb0b..faa8c99 100644
+--- a/config/initializers/source_adapters.rb
++++ b/config/initializers/source_adapters.rb
+@@ -3,4 +3,5 @@
+ 
+ Rails.application.config.after_initialize do
+   Sources::Registry.register(:postgresql, Sources::PostgresAdapter)
++  Sources::Registry.register(:salesforce, Sources::SalesforceAdapter)
+ end
+diff --git a/spec/integration/salesforce_pipeline_spec.rb b/spec/integration/salesforce_pipeline_spec.rb
+new file mode 100644
+index 0000000..1df5033
+--- /dev/null
++++ b/spec/integration/salesforce_pipeline_spec.rb
+@@ -0,0 +1,146 @@
++require "rails_helper"
++
++# rubocop:disable RSpec/DescribeClass — integration spec, not a single-class unit test
++RSpec.describe "Salesforce pipeline integration" do
++  let(:org) { create(:org) }
++  let(:mock_client) { instance_double(Restforce::Client) }
++  let(:sf_connection) do
++    create(:connection, org: org, db_type: "salesforce", connection_config: {
++      "instance_url" => "https://test.salesforce.com",
++      "sandbox" => true,
++      "credentials" => {
++        "client_id" => "test_id",
++        "client_secret" => "test_secret",
++        "username" => "test@example.com",
++        "password" => "pass",
++        "security_token" => "token"
++      }
++    })
++  end
++
++  before do
++    Current.org = org
++    allow(Restforce).to receive(:new).and_return(mock_client)
++    allow(mock_client).to receive(:authenticate!).and_return(true)
++  end
++
++  after { Current.org = nil }
++
++  describe "Registry resolution" do
++    it "resolves SalesforceAdapter for salesforce db_type" do
++      adapter = Sources::Registry.adapter_for(sf_connection)
++      expect(adapter).to be_a(Sources::SalesforceAdapter)
++    end
++  end
++
++  describe "ProbeJob" do
++    it "updates connection status to ok on successful probe" do
++      allow(mock_client).to receive(:describe).with("Account").and_return({ "name" => "Account" })
++
++      Connections::ProbeJob.perform_now(sf_connection.id)
++      sf_connection.reload
++
++      expect(sf_connection.connection_status).to eq("ok")
++      expect(sf_connection.connection_error).to be_nil
++    end
++
++    it "updates connection status to error on failed probe" do
++      allow(mock_client).to receive(:describe).with("Account")
++        .and_raise(Restforce::AuthenticationError.new("invalid_grant"))
++
++      Connections::ProbeJob.perform_now(sf_connection.id)
++      sf_connection.reload
++
++      expect(sf_connection.connection_status).to eq("error")
++      expect(sf_connection.connection_error).to include("invalid_grant")
++    end
++  end
++
++  describe "SchemaIntrospector" do
++    let(:object_list) { [ { "name" => "Account", "queryable" => true } ] }
++    let(:account_describe) do
++      { "fields" => [
++        { "name" => "Id", "type" => "id", "nillable" => false },
++        { "name" => "Name", "type" => "string", "nillable" => false }
++      ] }
++    end
++
++    it "returns Salesforce objects via the adapter" do
++      allow(mock_client).to receive(:describe).with(no_args).and_return(object_list)
++      allow(mock_client).to receive(:describe).with("Account").and_return(account_describe)
++
++      schema = Connections::SchemaIntrospector.call(sf_connection, force: true)
++
++      expect(schema.first[:table]).to eq("Account")
++      expect(schema.first[:columns].first[:name]).to eq("Id")
++    end
++  end
++
++  describe "Exports::Executor with Salesforce source" do
++    let(:mapping) do
++      create(:mapping, org: org, fields: [
++        { "source" => "Id", "target" => "sf_id" },
++        { "source" => "Name", "target" => "account_name" }
++      ])
++    end
++    let(:pipeline) do
++      create(:pipeline, org: org, connection: sf_connection, mapping: mapping,
++             query_text: "SELECT Id, Name FROM Account", transforms: [])
++    end
++    let(:destination) { create(:destination, org: org, config: {}) }
++    let(:export) { create(:export, org: org, pipeline: pipeline, destination: destination, name: "sf-test") }
++    let(:pipeline_run) { create(:pipeline_run, org: org, pipeline: pipeline) }
++    let(:compiled) { create(:compiled_definition, org: org) }
++    let(:sf_records) do
++      [
++        Restforce::SObject.new("Id" => "001A", "Name" => "Acme Corp", "attributes" => { "type" => "Account" }),
++        Restforce::SObject.new("Id" => "001B", "Name" => "Globex Inc", "attributes" => { "type" => "Account" })
++      ]
++    end
++
++    it "creates a successful ExportRun with correct row count", :aggregate_failures do
++      allow(mock_client).to receive(:query).with("SELECT Id, Name FROM Account").and_return(sf_records)
++
++      Exports::Executor.call(export, pipeline_run: pipeline_run, compiled: compiled)
++      export_run = ExportRun.last
++
++      expect(export_run.status).to eq("success")
++      expect(export_run.row_count).to eq(2)
++      expect(export_run.artifact).to be_attached
++    end
++
++    it "records performance metrics", :aggregate_failures do
++      allow(mock_client).to receive(:query).with("SELECT Id, Name FROM Account").and_return(sf_records)
++
++      Exports::Executor.call(export, pipeline_run: pipeline_run, compiled: compiled)
++      export_run = ExportRun.last
++
++      expect(export_run.metrics).to include("extraction_ms" => be_a(Integer))
++      expect(export_run.metrics).to include("rows_per_second" => be_a(Float))
++    end
++
++    it "writes CSV with mapped column names" do
++      allow(mock_client).to receive(:query).with("SELECT Id, Name FROM Account").and_return(sf_records)
++
++      Exports::Executor.call(export, pipeline_run: pipeline_run, compiled: compiled)
++      csv_content = ExportRun.last.artifact.download
++
++      expect(csv_content).to include("sf_id,account_name")
++      expect(csv_content).to include("001A,Acme Corp")
++    end
++
++    it "records failure when Salesforce query errors" do
++      allow(mock_client).to receive(:query)
++        .and_raise(Restforce::NotFoundError.new("INVALID_TYPE"))
++
++      expect {
++        Exports::Executor.call(export, pipeline_run: pipeline_run, compiled: compiled)
++      }.to raise_error(Sources::AdapterError)
++
++      export_run = ExportRun.last
++      expect(export_run.status).to eq("failed")
++      expect(export_run.error_class).to eq("Sources::AdapterError")
++    end
++  end
++end
++# rubocop:enable RSpec/DescribeClass
+diff --git a/spec/models/connection_spec.rb b/spec/models/connection_spec.rb
+index 21578e4..1e9457b 100644
+--- a/spec/models/connection_spec.rb
++++ b/spec/models/connection_spec.rb
+@@ -19,7 +19,7 @@
+   end
+ 
+   describe "enums" do
+-    it { is_expected.to define_enum_for(:db_type).with_values(mysql: "mysql", postgresql: "postgresql", sqlite: "sqlite").backed_by_column_of_type(:string) }
++    it { is_expected.to define_enum_for(:db_type).with_values(mysql: "mysql", postgresql: "postgresql", sqlite: "sqlite", salesforce: "salesforce").backed_by_column_of_type(:string) }
+     it { is_expected.to define_enum_for(:connection_status).with_values(unknown: "unknown", ok: "ok", error: "error").with_prefix(:connection).backed_by_column_of_type(:string) }
+   end
+ 
+diff --git a/spec/services/sources/salesforce_adapter_spec.rb b/spec/services/sources/salesforce_adapter_spec.rb
+new file mode 100644
+index 0000000..edad968
+--- /dev/null
++++ b/spec/services/sources/salesforce_adapter_spec.rb
+@@ -0,0 +1,239 @@
++require "rails_helper"
++
++RSpec.describe Sources::SalesforceAdapter do
++  subject(:adapter) { described_class.new(connection) }
++
++  let(:connection) do
++    build_stubbed(:connection, db_type: "salesforce", connection_config: {
++      "instance_url" => "https://test.salesforce.com",
++      "api_version" => "61.0",
++      "sandbox" => true,
++      "credentials" => {
++        "client_id" => "test_client_id",
++        "client_secret" => "test_client_secret",
++        "username" => "test@example.com",
++        "password" => "testpass",
++        "security_token" => "testtoken"
++      }
++    })
++  end
++
++  let(:mock_client) { instance_double(Restforce::Client) }
++
++  before do
++    allow(Restforce).to receive(:new).and_return(mock_client)
++    allow(mock_client).to receive(:authenticate!).and_return(true)
++  end
++
++  it_behaves_like "a source adapter" do
++    before do
++      allow(mock_client).to receive(:describe).with("Account").and_return({})
++      allow(mock_client).to receive(:describe).with(no_args).and_return([])
++      allow(mock_client).to receive(:query).and_return([])
++    end
++  end
++
++  describe "#probe" do
++    it "returns ok when Salesforce is reachable" do
++      allow(mock_client).to receive(:describe).with("Account").and_return({ "name" => "Account" })
++
++      result = adapter.probe
++      expect(result[:ok]).to be(true)
++      expect(result[:error]).to be_nil
++    end
++
++    it "returns error when authentication fails" do
++      allow(mock_client).to receive(:describe).with("Account")
++        .and_raise(Restforce::AuthenticationError.new("invalid_grant"))
++
++      result = adapter.probe
++      expect(result[:ok]).to be(false)
++      expect(result[:error]).to include("invalid_grant")
++    end
++  end
++
++  describe "#introspect_schema" do
++    let(:object_list) do
++      [
++        { "name" => "Account", "queryable" => true },
++        { "name" => "ApexLog", "queryable" => false }
++      ]
++    end
++    let(:account_describe) do
++      { "fields" => [
++        { "name" => "Id", "type" => "id", "nillable" => false },
++        { "name" => "Name", "type" => "string", "nillable" => false },
++        { "name" => "Industry", "type" => "picklist", "nillable" => true }
++      ] }
++    end
++    let(:expected_columns) do
++      [
++        { name: "Id", type: "id", nullable: false },
++        { name: "Name", type: "string", nullable: false },
++        { name: "Industry", type: "picklist", nullable: true }
++      ]
++    end
++
++    it "returns objects and their fields" do
++      allow(mock_client).to receive(:describe).with(no_args).and_return(object_list)
++      allow(mock_client).to receive(:describe).with("Account").and_return(account_describe)
++
++      schema = adapter.introspect_schema
++
++      expect(schema.length).to eq(1)
++      expect(schema.first[:table]).to eq("Account")
++      expect(schema.first[:columns]).to match_array(expected_columns)
++    end
++
++    it "skips non-queryable objects" do
++      allow(mock_client).to receive(:describe).with(no_args).and_return([
++        { "name" => "ApexLog", "queryable" => false }
++      ])
++
++      schema = adapter.introspect_schema
++      expect(schema).to be_empty
++    end
++  end
++
++  describe "#extract" do
++    it "returns normalized row hashes from SOQL query" do
++      records = [
++        Restforce::SObject.new("Id" => "001A", "Name" => "Acme", "attributes" => { "type" => "Account" }),
++        Restforce::SObject.new("Id" => "001B", "Name" => "Globex", "attributes" => { "type" => "Account" })
++      ]
++      allow(mock_client).to receive(:query).with("SELECT Id, Name FROM Account").and_return(records)
++
++      rows = adapter.extract("SELECT Id, Name FROM Account")
++
++      expect(rows.length).to eq(2)
++      expect(rows.first).to eq({ "Id" => "001A", "Name" => "Acme" })
++      expect(rows.first).not_to have_key("attributes")
++    end
++
++    it "returns empty array for no results" do
++      allow(mock_client).to receive(:query).and_return([])
++
++      rows = adapter.extract("SELECT Id FROM Account WHERE Id = 'nonexistent'")
++      expect(rows).to eq([])
++    end
++
++    it "raises AdapterError on Salesforce error" do
++      allow(mock_client).to receive(:query).and_raise(Restforce::NotFoundError.new("not found"))
++
++      expect {
++        adapter.extract("SELECT Id FROM BadObject__c")
++      }.to raise_error(Sources::AdapterError, /Salesforce query failed/)
++    end
++  end
++
++  describe "#extract_streaming" do
++    it "delegates to extract" do
++      allow(mock_client).to receive(:query).and_return([])
++
++      expect(adapter.extract_streaming("SELECT Id FROM Account")).to eq([])
++    end
++  end
++
++  describe "error handling" do
++    it "handles network timeouts gracefully" do
++      allow(mock_client).to receive(:describe).with("Account")
++        .and_raise(Faraday::TimeoutError.new("request timed out"))
++
++      result = adapter.probe
++      expect(result[:ok]).to be(false)
++      expect(result[:error]).to include("timed out")
++    end
++
++    it "handles connection refused" do
++      allow(mock_client).to receive(:describe).with("Account")
++        .and_raise(Faraday::ConnectionFailed.new("connection refused"))
++
++      result = adapter.probe
++      expect(result[:ok]).to be(false)
++      expect(result[:error]).to include("connection refused")
++    end
++
++    it "wraps introspection errors in AdapterError" do
++      allow(mock_client).to receive(:describe).with(no_args)
++        .and_raise(Restforce::UnauthorizedError.new("Session expired"))
++
++      expect {
++        adapter.introspect_schema
++      }.to raise_error(Sources::AdapterError, /introspection failed/)
++    end
++  end
++
++  describe "credentials handling" do
++    let(:no_token_config) do
++      {
++        "instance_url" => "https://test.salesforce.com",
++        "sandbox" => true,
++        "credentials" => {
++          "client_id" => "id", "client_secret" => "secret",
++          "username" => "user@test.com", "password" => "pass"
++        }
++      }
++    end
++
++    it "works without security_token" do
++      no_token_connection = build_stubbed(:connection, db_type: "salesforce", connection_config: no_token_config)
++      no_token_adapter = described_class.new(no_token_connection)
++      allow(mock_client).to receive(:describe).with("Account").and_return({})
++
++      no_token_adapter.probe
++
++      expect(Restforce).to have_received(:new).with(hash_including(password: "pass"))
++    end
++
++    it "reads credentials from nested credentials key" do
++      allow(mock_client).to receive(:describe).with("Account").and_return({})
++      adapter.probe
++
++      expect(Restforce).to have_received(:new).with(hash_including(
++        username: "test@example.com",
++        client_id: "test_client_id"
++      ))
++    end
++  end
++
++  describe "authentication" do
++    let(:prod_config) do
++      {
++        "instance_url" => "https://client.my.salesforce.com",
++        "sandbox" => false,
++        "credentials" => {
++          "client_id" => "id", "client_secret" => "secret",
++          "username" => "user@test.com", "password" => "pass"
++        }
++      }
++    end
++
++    it "concatenates password and security_token" do
++      allow(mock_client).to receive(:describe).with("Account").and_return({})
++      adapter.probe
++
++      expect(Restforce).to have_received(:new).with(hash_including(
++        password: "testpasstesttoken"
++      ))
++    end
++
++    it "uses sandbox login URL when sandbox is true" do
++      allow(mock_client).to receive(:describe).with("Account").and_return({})
++      adapter.probe
++
++      expect(Restforce).to have_received(:new).with(hash_including(
++        host: "test.salesforce.com"
++      ))
++    end
++
++    it "uses production login URL when sandbox is false" do
++      prod_connection = build_stubbed(:connection, db_type: "salesforce", connection_config: prod_config)
++      prod_adapter = described_class.new(prod_connection)
++      allow(mock_client).to receive(:describe).with("Account").and_return({})
++
++      prod_adapter.probe
++
++      expect(Restforce).to have_received(:new).with(hash_including(host: "login.salesforce.com"))
++    end
++  end
++end

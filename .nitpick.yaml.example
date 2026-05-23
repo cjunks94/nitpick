@@ -1,0 +1,19 @@
+# Drop this file as `.nitpick.yaml` at your repo root to override defaults.
+
+provider: anthropic                       # stub | deepseek | anthropic
+model: claude-haiku-4-5-20251001          # used when provider=anthropic
+
+review:
+  severity_threshold: nit                 # nit | useful | critical — post anything >= this
+  ignore_paths:
+    - "vendor/**"
+    - "**/*.lock"
+    - "**/*.svg"
+    - "**/testdata/**"
+  categories_enabled:
+    - bug
+    - security
+    - perf
+    - idiom
+    - todo
+    - suppression

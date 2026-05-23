@@ -1,0 +1,26 @@
+# Binaries
+nitpick
+nitpick.exe
+/bin/
+/out/
+
+# Test artifacts
+*.test
+coverage.out
+
+# Local config
+.nitpick.local.yaml
+.env
+.env.*
+
+# Editor
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Per-developer Claude Code settings
+.claude/settings.local.json
+
+# Eval workspace (cases are committed, transient scratch is not)
+eval/scratch/

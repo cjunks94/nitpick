@@ -1,0 +1,48 @@
+name: 'nitpick'
+description: 'Self-hosted AI code review for pull requests. BYO Anthropic or DeepSeek key.'
+author: 'cjunks94'
+
+inputs:
+  pr:
+    description: 'PR number (defaults to the PR that triggered this workflow)'
+    required: false
+    default: ${{ github.event.pull_request.number }}
+  repo:
+    description: 'owner/name (defaults to current repo)'
+    required: false
+    default: ${{ github.repository }}
+  provider:
+    description: 'stub | deepseek | anthropic'
+    required: false
+    default: 'stub'
+  dry-run:
+    description: 'Print findings to logs instead of posting to the PR'
+    required: false
+    default: 'false'
+  deepseek-api-key:
+    description: 'DeepSeek API key (required when provider=deepseek)'
+    required: false
+  anthropic-api-key:
+    description: 'Anthropic API key (required when provider=anthropic)'
+    required: false
+
+runs:
+  using: 'docker'
+  image: 'Dockerfile'
+  args:
+    - 'review'
+    - '--pr'
+    - ${{ inputs.pr }}
+    - '--repo'
+    - ${{ inputs.repo }}
+    - '--provider'
+    - ${{ inputs.provider }}
+    - --dry-run=${{ inputs.dry-run }}
+  env:
+    GITHUB_TOKEN: ${{ github.token }}
+    DEEPSEEK_API_KEY: ${{ inputs.deepseek-api-key }}
+    ANTHROPIC_API_KEY: ${{ inputs.anthropic-api-key }}
+
+branding:
+  icon: 'check-circle'
+  color: 'purple'

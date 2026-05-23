@@ -1,0 +1,39 @@
+diff --git a/.github/workflows/deploy.yml b/.github/workflows/deploy.yml
+index 7127fdc..447997a 100644
+--- a/.github/workflows/deploy.yml
++++ b/.github/workflows/deploy.yml
+@@ -34,7 +34,7 @@ jobs:
+       - uses: actions/checkout@v4
+       - uses: actions/setup-node@v4
+         with:
+-          node-version: '20'
++          node-version: '24'
+           cache: 'npm'
+       - run: npm ci
+       - run: npm run lint
+diff --git a/umami/Dockerfile b/umami/Dockerfile
+index 6550d54..6ae25a5 100644
+--- a/umami/Dockerfile
++++ b/umami/Dockerfile
+@@ -3,7 +3,7 @@
+ # Author: Chris Junker (optimized 2025-11-11)
+ # Size: ~73 MB | Startup: ~1.4s | Security: A+ | Zero trust build
+ 
+-ARG NODE_VERSION=20
++ARG NODE_VERSION=24
+ ARG UMAMI_VERSION=v2.13.2
+ ARG TARGETARCH
+ 
+diff --git a/umami/README.md b/umami/README.md
+index 13d9a67..5617de0 100644
+--- a/umami/README.md
++++ b/umami/README.md
+@@ -29,7 +29,7 @@ Self-hosted Umami analytics for cjunker.dev with zero-cost hosting and Cloudflar
+ 
+ ## Docker Images
+ 
+-- **Umami**: Optimized multi-stage build (Node 20 Alpine) - **~73MB** (down from 82MB, -11%)
++- **Umami**: Optimized multi-stage build (Node 24 Alpine) - **~73MB** (down from 82MB, -11%)
+ - **PostgreSQL**: `postgres:16-alpine` (~240MB)
+ - **Total stack size**: ~313MB (vs 1GB+ with standard images)
+ 

@@ -1,0 +1,85 @@
+diff --git a/src/agentic_portfolio/web/templates/dashboard.html b/src/agentic_portfolio/web/templates/dashboard.html
+index 220c695..e128e2a 100644
+--- a/src/agentic_portfolio/web/templates/dashboard.html
++++ b/src/agentic_portfolio/web/templates/dashboard.html
+@@ -45,49 +45,42 @@
+ }
+ </script>
+ 
+-<div hx-get="/fragment/summary" hx-trigger="every 10s" hx-swap="outerHTML">
+-    {% include "_summary.html" %}
+-</div>
+-
+ <div class="panel">
+-    <div class="panel-title">WATCHLIST &nbsp;<span style="color: var(--text-dim);">— TICKERS THE WEEKLY CRON ANALYZES</span></div>
+-    <div class="panel-body" id="watchlist-panel-body" hx-get="/fragment/watchlist" hx-trigger="every 30s" hx-swap="innerHTML">
+-        {% include "_watchlist.html" %}
++    <div class="panel-title">RUN PROGRESS &nbsp;<span style="color: var(--text-dim);">— LIVE QUEUE & CANCEL</span></div>
++    <div class="panel-body" id="progress-panel-body" hx-get="/fragment/progress" hx-trigger="every 3s" hx-swap="innerHTML">
++        {% include "_progress.html" %}
+     </div>
+ </div>
+ 
+ <div class="panel">
+-    <div class="panel-title">VS SPY &nbsp;<span style="color: var(--text-dim);">— BUY-AND-HOLD ATTRIBUTION</span></div>
+-    <div class="panel-body" id="attribution-panel-body" hx-get="/fragment/attribution" hx-trigger="every 30s" hx-swap="innerHTML">
+-        {% include "_attribution.html" %}
++    <div class="panel-title">PENDING ORDERS &nbsp;<span style="color: var(--text-dim);">— APPROVE TO EXECUTE</span></div>
++    <div class="panel-body" id="pending-panel-body" hx-get="/fragment/pending" hx-trigger="every 5s" hx-swap="innerHTML">
++        {% include "_pending.html" %}
+     </div>
+ </div>
+ 
+-<div class="panel">
+-    <div class="panel-title">EQUITY CURVE &nbsp;<span style="color: var(--text-dim);">— PORTFOLIO VS SPY OVER TIME</span></div>
+-    <div class="panel-body" id="equity-curve-panel-body" hx-get="/fragment/equity-curve" hx-trigger="every 60s" hx-swap="innerHTML">
+-        {% include "_equity_curve.html" %}
+-    </div>
++<div hx-get="/fragment/summary" hx-trigger="every 10s" hx-swap="outerHTML">
++    {% include "_summary.html" %}
+ </div>
+ 
+ <div class="panel">
+-    <div class="panel-title">RUN PROGRESS &nbsp;<span style="color: var(--text-dim);">— LIVE QUEUE & CANCEL</span></div>
+-    <div class="panel-body" id="progress-panel-body" hx-get="/fragment/progress" hx-trigger="every 3s" hx-swap="innerHTML">
+-        {% include "_progress.html" %}
++    <div class="panel-title">POSITIONS</div>
++    <div class="panel-body" hx-get="/fragment/positions" hx-trigger="every 10s" hx-swap="innerHTML">
++        {% include "_positions.html" %}
+     </div>
+ </div>
+ 
+ <div class="panel">
+-    <div class="panel-title">PENDING ORDERS &nbsp;<span style="color: var(--text-dim);">— APPROVE TO EXECUTE</span></div>
+-    <div class="panel-body" id="pending-panel-body" hx-get="/fragment/pending" hx-trigger="every 5s" hx-swap="innerHTML">
+-        {% include "_pending.html" %}
++    <div class="panel-title">EQUITY CURVE &nbsp;<span style="color: var(--text-dim);">— PORTFOLIO VS SPY OVER TIME</span></div>
++    <div class="panel-body" id="equity-curve-panel-body" hx-get="/fragment/equity-curve" hx-trigger="every 60s" hx-swap="innerHTML">
++        {% include "_equity_curve.html" %}
+     </div>
+ </div>
+ 
+ <div class="panel">
+-    <div class="panel-title">POSITIONS</div>
+-    <div class="panel-body" hx-get="/fragment/positions" hx-trigger="every 10s" hx-swap="innerHTML">
+-        {% include "_positions.html" %}
++    <div class="panel-title">VS SPY &nbsp;<span style="color: var(--text-dim);">— BUY-AND-HOLD ATTRIBUTION</span></div>
++    <div class="panel-body" id="attribution-panel-body" hx-get="/fragment/attribution" hx-trigger="every 30s" hx-swap="innerHTML">
++        {% include "_attribution.html" %}
+     </div>
+ </div>
+ 
+@@ -105,6 +98,13 @@
+     </div>
+ </div>
+ 
++<div class="panel">
++    <div class="panel-title">WATCHLIST &nbsp;<span style="color: var(--text-dim);">— TICKERS THE WEEKLY CRON ANALYZES</span></div>
++    <div class="panel-body" id="watchlist-panel-body" hx-get="/fragment/watchlist" hx-trigger="every 30s" hx-swap="innerHTML">
++        {% include "_watchlist.html" %}
++    </div>
++</div>
++
+ <div class="panel">
+     <div class="panel-title">SYSTEM</div>
+     <div class="panel-body" hx-get="/fragment/system" hx-trigger="every 5s" hx-swap="innerHTML">

@@ -1,0 +1,466 @@
+diff --git a/.env.example b/.env.example
+index aa0775d..740a58e 100644
+--- a/.env.example
++++ b/.env.example
+@@ -27,3 +27,10 @@ DEEPSEEK_API_KEY=
+ # Railway log parsing.
+ # AGENTIC_PORTFOLIO_LOG_LEVEL=INFO
+ # AGENTIC_PORTFOLIO_LOG_FORMAT=json
++
++# Minimum seconds between consecutive RUN NOW invocations on a public
++# deploy. Default 0 (off) so local dev can re-run freely. Set to e.g. 1800
++# (30 min) on the live demo to stop casual mashing — single-flight already
++# blocks overlap; this caps post-completion mashing too. Returns HTTP 429
++# until the window elapses. The scheduled cron is unaffected.
++# AGENTIC_PORTFOLIO_RUN_COOLDOWN_SECONDS=1800
+diff --git a/src/agentic_portfolio/web/api.py b/src/agentic_portfolio/web/api.py
+index d082de8..d236b7e 100644
+--- a/src/agentic_portfolio/web/api.py
++++ b/src/agentic_portfolio/web/api.py
+@@ -3,6 +3,7 @@
+ from __future__ import annotations
+ 
+ import logging
++import os
+ import threading
+ from datetime import date, datetime, timezone
+ from pathlib import Path
+@@ -193,11 +194,28 @@ def post_run(
+                     detail=f"Unknown ticker(s): {', '.join(invalid)}",
+                 )
+ 
++        source = "custom" if custom_tickers else "manual"
++        started, reason = tracker.try_start(
++            source=source,
++            cooldown_seconds=_run_cooldown_seconds(),
++        )
++        if not started:
++            if reason == "already_running":
++                raise HTTPException(
++                    status_code=409,
++                    detail="A run is already in progress",
++                )
++            # cooldown
++            raise HTTPException(
++                status_code=429,
++                detail="Run cooldown active; wait before starting another run",
++            )
++
+         _launch_run_in_background(
+             tracker=tracker,
+             config_path=config_path,
+             data_dir=data_dir,
+-            source="custom" if custom_tickers else "manual",
++            source=source,
+             tickers=custom_tickers,
+         )
+         return {
+@@ -570,6 +588,20 @@ def _data_paths(request: Request) -> dict[str, Path]:
+     return paths
+ 
+ 
++def _run_cooldown_seconds() -> float:
++    """Read AGENTIC_PORTFOLIO_RUN_COOLDOWN_SECONDS, default 0 (off).
++
++    Set to e.g. 1800 on a public deploy to stop casual mashing of RUN NOW.
++    Read per-request so tests and the live deploy can flip it without an
++    app restart.
++    """
++    raw = os.environ.get("AGENTIC_PORTFOLIO_RUN_COOLDOWN_SECONDS", "0")
++    try:
++        return max(0.0, float(raw))
++    except (TypeError, ValueError):
++        return 0.0
++
++
+ def _launch_run_in_background(
+     *,
+     tracker: RunTracker,
+@@ -620,7 +652,9 @@ def _execute_run(
+     from ..runner import Runner
+     from ..strategy import validate_sizing
+ 
+-    tracker.mark_started(source=source)
++    # The slot has already been claimed by the caller via tracker.try_start
++    # (POST /api/run or the scheduler callback). Do not re-mark started here
++    # — that would re-stamp started_at and racily clobber state.
+     try:
+         cfg = load_config(config_path)
+         paths = _paths(data_dir)
+diff --git a/src/agentic_portfolio/web/runs.py b/src/agentic_portfolio/web/runs.py
+index 092cf4a..93d453d 100644
+--- a/src/agentic_portfolio/web/runs.py
++++ b/src/agentic_portfolio/web/runs.py
+@@ -36,7 +36,15 @@ def __init__(self, path: Path):
+         self._lock = threading.RLock()
+ 
+     def current(self) -> dict[str, Any] | None:
+-        return read_json(self.path)
++        # read_json returns Any|None — narrow to dict|None at the boundary
++        # so every method in this class can safely call prior.get(...)
++        # without scattering isinstance checks. A malformed file (non-dict
++        # JSON, e.g. a hand-edit that left a list or null) is treated as
++        # missing rather than poisoning every caller.
++        raw = read_json(self.path)
++        if not isinstance(raw, dict):
++            return None
++        return raw
+ 
+     def mark_started(self, source: str) -> None:
+         with self._lock:
+@@ -49,6 +57,57 @@ def mark_started(self, source: str) -> None:
+                 },
+             )
+ 
++    def try_start(
++        self,
++        *,
++        source: str,
++        cooldown_seconds: float = 0.0,
++    ) -> tuple[bool, str | None]:
++        """Atomic single-flight + cooldown claim.
++
++        Returns ``(True, None)`` and writes the running state if a run may
++        start. Returns ``(False, reason)`` if blocked, where reason is one of:
++
++        - ``"already_running"`` — another run is in progress.
++        - ``"cooldown"`` — within ``cooldown_seconds`` of the last completed
++          or failed run.
++
++        The check + write happen under the same lock as every other tracker
++        mutation, so two concurrent ``POST /api/run`` requests cannot both
++        claim the slot.
++        """
++        with self._lock:
++            prior = self.current() or {}
++            status = prior.get("status")
++            if status == "running":
++                return False, "already_running"
++            if cooldown_seconds > 0 and status in ("completed", "failed"):
++                completed_at_iso = prior.get("completed_at")
++                if isinstance(completed_at_iso, str):
++                    try:
++                        completed_at = datetime.fromisoformat(completed_at_iso)
++                    except ValueError:
++                        completed_at = None
++                    if completed_at is not None:
++                        # mark_completed/mark_failed always write tz-aware
++                        # timestamps, but legacy state files or hand-edits
++                        # may have naive datetimes — assume UTC so the
++                        # subtraction below doesn't raise TypeError.
++                        if completed_at.tzinfo is None:
++                            completed_at = completed_at.replace(tzinfo=timezone.utc)
++                        elapsed = (datetime.now(timezone.utc) - completed_at).total_seconds()
++                        if elapsed < cooldown_seconds:
++                            return False, "cooldown"
++            atomic_write_json(
++                self.path,
++                {
++                    "status": "running",
++                    "source": source,
++                    "started_at": datetime.now(timezone.utc).isoformat(),
++                },
++            )
++            return True, None
++
+     def mark_completed(
+         self,
+         *,
+diff --git a/src/agentic_portfolio/web/scheduler.py b/src/agentic_portfolio/web/scheduler.py
+index 296fd99..874f7a8 100644
+--- a/src/agentic_portfolio/web/scheduler.py
++++ b/src/agentic_portfolio/web/scheduler.py
+@@ -61,9 +61,17 @@ def _scheduled_run_callback(app: FastAPI) -> None:
+     Lives at module scope so APScheduler can pickle the job reference for
+     its job store (we don't persist jobs today, but this stays compatible
+     if we add a SQLAlchemyJobStore later).
++
++    Single-flight: skip if a manual run is already in progress. The cron
++    cadence itself controls timing, so no cooldown is applied here.
+     """
++    tracker = app.state.run_tracker
++    started, reason = tracker.try_start(source="cron", cooldown_seconds=0.0)
++    if not started:
++        logger.warning("Skipping scheduled run: %s", reason)
++        return
+     _execute_run(
+-        tracker=app.state.run_tracker,
++        tracker=tracker,
+         config_path=app.state.config_path,
+         data_dir=app.state.data_dir,
+         source="cron",
+diff --git a/tests/test_runs.py b/tests/test_runs.py
+index 1d74bb5..1f2408f 100644
+--- a/tests/test_runs.py
++++ b/tests/test_runs.py
+@@ -4,13 +4,16 @@
+ - start / complete / fail status transitions (existing behavior)
+ - progress lifecycle: init_progress → set_ticker_state(in_progress|completed|failed)
+ - cancel signaling: request_cancel() flips a flag the runner reads
++- try_start single-flight + cooldown gating
+ """
+ 
+ from __future__ import annotations
+ 
+ import threading
++from datetime import datetime, timedelta, timezone
+ from pathlib import Path
+ 
++from agentic_portfolio.storage import atomic_write_json
+ from agentic_portfolio.web.runs import RunTracker
+ 
+ 
+@@ -169,3 +172,151 @@ def worker(ticker: str) -> None:
+ 
+         progress = tracker.current()["progress"]
+         assert progress == {t: "completed" for t in tickers}
++
++
++class TestTryStart:
++    def test_try_start_from_idle_claims_slot(self, tmp_path: Path):
++        tracker = RunTracker(tmp_path / "current_run.json")
++        started, reason = tracker.try_start(source="manual")
++        assert (started, reason) == (True, None)
++        current = tracker.current()
++        assert current["status"] == "running"
++        assert current["source"] == "manual"
++        assert "started_at" in current
++
++    def test_try_start_refuses_when_running(self, tmp_path: Path):
++        tracker = RunTracker(tmp_path / "current_run.json")
++        tracker.mark_started(source="manual")
++        # Second caller seen by the first request claiming the slot.
++        started, reason = tracker.try_start(source="custom")
++        assert (started, reason) == (False, "already_running")
++
++    def test_try_start_after_completed_no_cooldown_succeeds(self, tmp_path: Path):
++        tracker = RunTracker(tmp_path / "current_run.json")
++        tracker.mark_started(source="manual")
++        tracker.mark_completed(
++            pending_created=0,
++            decisions_made=0,
++            tickers_skipped=[],
++            total_equity=10_000.0,
++        )
++        started, reason = tracker.try_start(source="manual")
++        assert (started, reason) == (True, None)
++
++    def test_try_start_within_cooldown_refuses(self, tmp_path: Path):
++        tracker = RunTracker(tmp_path / "current_run.json")
++        tracker.mark_started(source="manual")
++        tracker.mark_completed(
++            pending_created=0,
++            decisions_made=0,
++            tickers_skipped=[],
++            total_equity=10_000.0,
++        )
++        # 1-hour cooldown; just-completed means we're well inside it.
++        started, reason = tracker.try_start(source="manual", cooldown_seconds=3600)
++        assert (started, reason) == (False, "cooldown")
++
++    def test_try_start_after_cooldown_elapses(self, tmp_path: Path):
++        tracker = RunTracker(tmp_path / "current_run.json")
++        # Hand-craft a completed-state JSON with completed_at far in the past.
++        old_completed_at = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
++        atomic_write_json(
++            tracker.path,
++            {
++                "status": "completed",
++                "source": "manual",
++                "started_at": old_completed_at,
++                "completed_at": old_completed_at,
++                "pending_created": 0,
++                "decisions_made": 0,
++                "tickers_skipped": [],
++                "total_equity": 10_000.0,
++            },
++        )
++        # 30-min cooldown vs. a 2-hour-old completion → should let through.
++        started, reason = tracker.try_start(source="manual", cooldown_seconds=1800)
++        assert (started, reason) == (True, None)
++
++    def test_try_start_cooldown_zero_disables_gate(self, tmp_path: Path):
++        tracker = RunTracker(tmp_path / "current_run.json")
++        tracker.mark_started(source="manual")
++        tracker.mark_completed(
++            pending_created=0,
++            decisions_made=0,
++            tickers_skipped=[],
++            total_equity=10_000.0,
++        )
++        started, reason = tracker.try_start(source="manual", cooldown_seconds=0.0)
++        assert (started, reason) == (True, None)
++
++    def test_try_start_treats_malformed_file_as_idle(self, tmp_path: Path):
++        # A hand-edit or partial write could leave non-dict JSON on disk
++        # (array or scalar). current() narrows to dict-or-None at the
++        # boundary, so try_start treats a malformed file as "no run" and
++        # claims the slot rather than crashing on prior.get(...).
++        path = tmp_path / "current_run.json"
++        path.write_text("[]", encoding="utf-8")
++        tracker = RunTracker(path)
++
++        started, reason = tracker.try_start(source="manual")
++        assert (started, reason) == (True, None)
++        # The corrupted file is now overwritten with a valid dict.
++        current = tracker.current()
++        assert current is not None
++        assert current["status"] == "running"
++
++    def test_try_start_handles_naive_completed_at(self, tmp_path: Path):
++        # Legacy state files (or a hand-edit) may have a tz-naive
++        # completed_at. Subtracting that from a tz-aware now() raises
++        # TypeError unless we normalize. Assume UTC and treat the run as
++        # within cooldown (the conservative choice for unknown legacy data).
++        tracker = RunTracker(tmp_path / "current_run.json")
++        naive_iso = (datetime.now(timezone.utc).replace(tzinfo=None)).isoformat()
++        atomic_write_json(
++            tracker.path,
++            {
++                "status": "completed",
++                "source": "manual",
++                "started_at": naive_iso,
++                "completed_at": naive_iso,
++                "pending_created": 0,
++                "decisions_made": 0,
++                "tickers_skipped": [],
++                "total_equity": 10_000.0,
++            },
++        )
++        # Should not raise; should refuse on cooldown grounds.
++        started, reason = tracker.try_start(source="manual", cooldown_seconds=3600)
++        assert (started, reason) == (False, "cooldown")
++
++    def test_try_start_after_failed_with_cooldown(self, tmp_path: Path):
++        tracker = RunTracker(tmp_path / "current_run.json")
++        tracker.mark_started(source="manual")
++        tracker.mark_failed(error="boom")
++        # Failed runs should also count for cooldown — otherwise an attacker
++        # could trigger crashes to bypass the rate gate.
++        started, reason = tracker.try_start(source="manual", cooldown_seconds=3600)
++        assert (started, reason) == (False, "cooldown")
++
++    def test_try_start_concurrent_only_one_wins(self, tmp_path: Path):
++        # Even if two threads call try_start at the same instant, only one
++        # gets the (True, None) result. The lock serializes the read-check-write.
++        tracker = RunTracker(tmp_path / "current_run.json")
++        results: list[tuple[bool, str | None]] = []
++        lock = threading.Lock()
++
++        def worker() -> None:
++            outcome = tracker.try_start(source="manual")
++            with lock:
++                results.append(outcome)
++
++        threads = [threading.Thread(target=worker) for _ in range(8)]
++        for t in threads:
++            t.start()
++        for t in threads:
++            t.join()
++
++        wins = [r for r in results if r == (True, None)]
++        losses = [r for r in results if r == (False, "already_running")]
++        assert len(wins) == 1
++        assert len(losses) == 7
+diff --git a/tests/test_web_api.py b/tests/test_web_api.py
+index c89f008..3595ccb 100644
+--- a/tests/test_web_api.py
++++ b/tests/test_web_api.py
+@@ -451,6 +451,97 @@ def fake_run(**kwargs):
+         assert called["tickers"] is None
+         assert called["source"] == "manual"
+ 
++    def test_post_run_returns_409_when_already_running(
++        self, client: TestClient, seeded_portfolio: Portfolio, monkeypatch
++    ):
++        # Stop the background launcher so the "running" state is the only
++        # signal — we want to verify the gate, not race the daemon thread.
++        launched = {"called": False}
++
++        def fake_run(**kwargs):
++            launched["called"] = True
++
++        monkeypatch.setattr("agentic_portfolio.web.api._launch_run_in_background", fake_run)
++
++        # Pre-claim the slot to simulate a run already in progress.
++        from agentic_portfolio.web.runs import RunTracker
++
++        tracker = client.app.state.run_tracker
++        assert isinstance(tracker, RunTracker)
++        tracker.mark_started(source="cron")
++
++        response = client.post("/api/run")
++        assert response.status_code == 409
++        assert "in progress" in response.json()["detail"].lower()
++        assert launched["called"] is False
++
++    def test_post_run_returns_429_when_in_cooldown(
++        self,
++        client: TestClient,
++        seeded_portfolio: Portfolio,
++        monkeypatch,
++    ):
++        launched = {"called": False}
++
++        def fake_run(**kwargs):
++            launched["called"] = True
++
++        monkeypatch.setattr("agentic_portfolio.web.api._launch_run_in_background", fake_run)
++
++        # Set a generous cooldown via env so the just-completed run is
++        # well within the window.
++        monkeypatch.setenv("AGENTIC_PORTFOLIO_RUN_COOLDOWN_SECONDS", "3600")
++
++        from agentic_portfolio.web.runs import RunTracker
++
++        tracker = client.app.state.run_tracker
++        assert isinstance(tracker, RunTracker)
++        tracker.mark_started(source="manual")
++        tracker.mark_completed(
++            pending_created=0,
++            decisions_made=0,
++            tickers_skipped=[],
++            total_equity=10_000.0,
++        )
++
++        response = client.post("/api/run")
++        assert response.status_code == 429
++        assert "cooldown" in response.json()["detail"].lower()
++        assert launched["called"] is False
++
++    def test_post_run_no_cooldown_env_lets_back_to_back_runs_through(
++        self,
++        client: TestClient,
++        seeded_portfolio: Portfolio,
++        monkeypatch,
++    ):
++        # Default (env unset / 0) means dev iteration is unblocked.
++        monkeypatch.delenv("AGENTIC_PORTFOLIO_RUN_COOLDOWN_SECONDS", raising=False)
++
++        called = {"count": 0}
++
++        def fake_run(**kwargs):
++            called["count"] += 1
++
++        monkeypatch.setattr("agentic_portfolio.web.api._launch_run_in_background", fake_run)
++
++        from agentic_portfolio.web.runs import RunTracker
++
++        tracker = client.app.state.run_tracker
++        assert isinstance(tracker, RunTracker)
++        # Simulate a just-completed run.
++        tracker.mark_started(source="manual")
++        tracker.mark_completed(
++            pending_created=0,
++            decisions_made=0,
++            tickers_skipped=[],
++            total_equity=10_000.0,
++        )
++
++        response = client.post("/api/run")
++        assert response.status_code == 202
++        assert called["count"] == 1
++
+ 
+ class TestWatchlistEditor:
+     def test_get_watchlist_returns_config_default_when_no_override(self, client: TestClient):

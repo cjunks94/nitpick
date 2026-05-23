@@ -1,0 +1,38 @@
+diff --git a/.github/workflows/deploy.yml b/.github/workflows/deploy.yml
+index 7127fdc..00235ea 100644
+--- a/.github/workflows/deploy.yml
++++ b/.github/workflows/deploy.yml
+@@ -23,10 +23,12 @@ jobs:
+   test:
+     name: Test & Lint
+     runs-on: ubuntu-latest
+-    # ONLY run tests on push or manual — NEVER on PR (previews don't need tests)
++    # Run on push, manual dispatch, and Dependabot PRs (so dep bumps get test signal).
++    # Skipped on regular PRs — previews go straight to staging.
+     if: |
+       github.event_name == 'push' ||
+-      github.event_name == 'workflow_dispatch'
++      github.event_name == 'workflow_dispatch' ||
++      (github.event_name == 'pull_request' && github.actor == 'dependabot[bot]')
+     concurrency:
+       group: test-${{ github.ref }}
+       cancel-in-progress: true
+@@ -78,11 +80,14 @@ jobs:
+   deploy-staging:
+     name: Deploy → Staging (staging.cjunker.dev)
+     runs-on: ubuntu-latest
+-    # NO `needs: test` → PRs deploy instantly without waiting
++    # NO `needs: test` → PRs deploy instantly without waiting.
++    # Skip Dependabot PRs — they don't have access to ACTIONS_DEPLOY_KEY
++    # (Dependabot secrets are scoped separately from regular repo secrets).
+     if: |
+-      github.ref != 'refs/heads/master' && github.event_name == 'push' ||
+-      github.event_name == 'pull_request' ||
+-      (github.event_name == 'workflow_dispatch' && inputs.environment == 'staging')
++      github.actor != 'dependabot[bot]' &&
++      (github.ref != 'refs/heads/master' && github.event_name == 'push' ||
++       github.event_name == 'pull_request' ||
++       (github.event_name == 'workflow_dispatch' && inputs.environment == 'staging'))
+     environment: staging
+     concurrency:
+       group: staging-deploy-${{ github.ref }}

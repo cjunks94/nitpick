@@ -1,0 +1,53 @@
+diff --git a/.github/workflows/security.yml b/.github/workflows/security.yml
+index a8d8c3e..923792c 100644
+--- a/.github/workflows/security.yml
++++ b/.github/workflows/security.yml
+@@ -78,6 +78,13 @@ jobs:
+     # because Dependabot's GITHUB_TOKEN is read-only and the action
+     # tries to write PR comments.
+     if: github.event_name != 'pull_request' || github.actor != 'dependabot[bot]'
++    # gitleaks-action calls GET /repos/{owner}/{repo}/pulls/{n}/commits
++    # on pull_request events. The workflow's top-level permissions
++    # grant only contents: read, so this job needs an explicit
++    # pull-requests: read scope; without it the action 403s.
++    permissions:
++      contents: read
++      pull-requests: read
+     steps:
+       - uses: actions/checkout@v6
+         with:
+diff --git a/main.go b/main.go
+index af30763..a14a0fb 100644
+--- a/main.go
++++ b/main.go
+@@ -179,7 +179,12 @@ func (s *server) requireAuth(h http.HandlerFunc) http.HandlerFunc {
+ 		// Hash both sides so the compared slices are always 32 bytes;
+ 		// ConstantTimeCompare short-circuits on length mismatch and would
+ 		// otherwise leak the real token's length via timing.
+-		given := strings.TrimPrefix(auth, "Bearer ")
++		//
++		// TrimSpace handles benign client mistakes (extra space after the
++		// scheme, trailing whitespace) per RFC 7230 §3.2.4 — without it,
++		// "Bearer  token" reaches the compare as " token" and silently
++		// 401s with a misleading "invalid token" instead of succeeding.
++		given := strings.TrimSpace(strings.TrimPrefix(auth, "Bearer "))
+ 		givenHash := sha256.Sum256([]byte(given))
+ 		if subtle.ConstantTimeCompare(givenHash[:], s.authTokenHash[:]) != 1 {
+ 			writeErr(w, http.StatusUnauthorized, "invalid token")
+diff --git a/main_test.go b/main_test.go
+index cda198d..668d72f 100644
+--- a/main_test.go
++++ b/main_test.go
+@@ -78,6 +78,12 @@ func TestAuth(t *testing.T) {
+ 		{"wrong token", "Bearer wrong-token", http.StatusUnauthorized},
+ 		{"missing Bearer prefix", testToken, http.StatusUnauthorized},
+ 		{"correct token", "Bearer " + testToken, http.StatusOK},
++		// Benign whitespace mistakes that should still authenticate.
++		// Without TrimSpace these silently fail with "invalid token"
++		// even though the token is correct.
++		{"double space after scheme", "Bearer  " + testToken, http.StatusOK},
++		{"trailing whitespace", "Bearer " + testToken + " ", http.StatusOK},
++		{"trailing tab", "Bearer " + testToken + "\t", http.StatusOK},
+ 	}
+ 	for _, tt := range tests {
+ 		t.Run(tt.name, func(t *testing.T) {

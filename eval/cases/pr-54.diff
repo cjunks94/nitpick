@@ -1,0 +1,795 @@
+diff --git a/packages/client/src/components/Map/TransitMap.tsx b/packages/client/src/components/Map/TransitMap.tsx
+index 06770f1..d22b2e7 100644
+--- a/packages/client/src/components/Map/TransitMap.tsx
++++ b/packages/client/src/components/Map/TransitMap.tsx
+@@ -287,7 +287,10 @@ export function TransitMap({ geojsonRef, interpolateFrame, trains, routeShapes,
+   // out aircraft that drop off ADS-B coverage instead of yanking them off
+   // the map. The geojsonRef is mutated in place by interpolateAircraftFrame
+   // — the RAF loop pushes setData to the "aircraft" source each frame.
+-  const { aircraftGeojsonRef, interpolateAircraftFrame } = useAircraftFeatures(aircraft);
++  // mode === null means the airspace view is active; flipping away from
++  // airspace is the signal to drop carried-forward aircraft immediately
++  // rather than letting them fade for ~20s on top of another mode.
++  const { aircraftGeojsonRef, interpolateAircraftFrame } = useAircraftFeatures(aircraft, mode === null);
+ 
+   // RAF loop — interpolates coordinates and pushes directly to MapLibre (no
+   // React renders). When a train is followed, also re-center the camera on
+diff --git a/packages/client/src/hooks/useAircraftFeatures.ts b/packages/client/src/hooks/useAircraftFeatures.ts
+index 92e6bf3..f12114c 100644
+--- a/packages/client/src/hooks/useAircraftFeatures.ts
++++ b/packages/client/src/hooks/useAircraftFeatures.ts
+@@ -75,7 +75,7 @@ function snapshotFromAircraft(a: Aircraft): AircraftSnapshot {
+  * deltas are small (<10°) and sudden true heading changes (e.g. turning
+  * onto an approach) are correct to render immediately, not gradually.
+  */
+-export function useAircraftFeatures(aircraft: Aircraft[]) {
++export function useAircraftFeatures(aircraft: Aircraft[], enabled: boolean) {
+   const stateRef = useRef(new Map<string, AircraftEntry>());
+   const geojsonRef = useRef<GeoJSON.FeatureCollection>(EMPTY_FC);
+   // Keyed by hex so feature objects survive across polls — we mutate
+@@ -89,7 +89,20 @@ export function useAircraftFeatures(aircraft: Aircraft[]) {
+   // and new aircraft would sit invisible until they moved.
+   const dirtyRef = useRef(true);
+ 
++  // When the airspace view is toggled off (mode flip away from airspace),
++  // drop everything immediately. Otherwise the carry-forward fade window
++  // would leave aircraft visible on top of subway/LIRR for ~20s — the
++  // fade was meant for missed-poll resilience, not for tab-switch unloads.
+   useEffect(() => {
++    if (enabled) return;
++    stateRef.current = new Map();
++    featuresByHex.current = new Map();
++    geojsonRef.current = EMPTY_FC;
++    dirtyRef.current = true;
++  }, [enabled]);
++
++  useEffect(() => {
++    if (!enabled) return;
+     const now = Date.now();
+     const next = new Map<string, AircraftEntry>();
+ 
+@@ -160,7 +173,7 @@ export function useAircraftFeatures(aircraft: Aircraft[]) {
+     featuresByHex.current = nextByHex;
+     geojsonRef.current = { type: "FeatureCollection", features };
+     dirtyRef.current = true;
+-  }, [aircraft]);
++  }, [aircraft, enabled]);
+ 
+   const interpolateFrame = useCallback((): boolean => {
+     const now = Date.now();
+diff --git a/packages/client/src/hooks/useRouteShapes.ts b/packages/client/src/hooks/useRouteShapes.ts
+index 0053063..7c82820 100644
+--- a/packages/client/src/hooks/useRouteShapes.ts
++++ b/packages/client/src/hooks/useRouteShapes.ts
+@@ -1,6 +1,12 @@
+ import { useState, useEffect } from "react";
+ import type { Mode, RoutesGeoJSON, StopsGeoJSON } from "@panoptrain/shared";
+ import { fetchRoutes, fetchStops } from "../lib/api.js";
++import {
++  getRoutes as getCachedRoutes,
++  setRoutes as setCachedRoutes,
++  getStops as getCachedStops,
++  setStops as setCachedStops,
++} from "../lib/modeCache.js";
+ 
+ interface UseRouteShapesResult {
+   routeShapes: RoutesGeoJSON | null;
+@@ -15,25 +21,42 @@ export function useRouteShapes(mode: Mode | null): UseRouteShapesResult {
+   useEffect(() => {
+     let cancelled = false;
+ 
+-    // Reset state on mode flip so we don't show subway shapes briefly while
+-    // LIRR data is still loading. Same reset path covers the airspace flip
+-    // (mode === null) since transit shapes have no place there either.
+-    setRouteShapes(null);
+-    setStopsGeoJson(null);
++    if (mode === null) {
++      // Airspace view — clear transit shapes (no place for them here).
++      setRouteShapes(null);
++      setStopsGeoJson(null);
++      return;
++    }
+ 
+-    if (mode === null) return; // airspace view — no shapes/stops to fetch
++    // Cache hit replaces the prior mode's payload synchronously, so there's
++    // no need to flash null first. On miss, set null then fetch — preserves
++    // the original "don't show subway shapes briefly while LIRR loads"
++    // guarantee. Stops and routes resolve independently (PT-104).
++    const cachedRoutes = getCachedRoutes(mode);
++    setRouteShapes(cachedRoutes ?? null);
+ 
+-    // Fetch stops and routes independently so each renders as soon as it's
+-    // ready (PT-104). The routes GeoJSON is multi-MB; previously Promise.all
+-    // held back the smaller stops payload until both resolved. With them
+-    // decoupled, station dots/labels appear well before the route lines.
+-    fetchStops(mode)
+-      .then((stops) => { if (!cancelled) setStopsGeoJson(enrichStops(stops)); })
+-      .catch((err) => console.error("Failed to load stops:", err));
++    const cachedStops = getCachedStops(mode);
++    setStopsGeoJson(cachedStops ? enrichStops(cachedStops) : null);
+ 
+-    fetchRoutes(mode)
+-      .then((routes) => { if (!cancelled) setRouteShapes(routes); })
+-      .catch((err) => console.error("Failed to load routes:", err));
++    if (!cachedStops) {
++      fetchStops(mode)
++        .then((stops) => {
++          if (cancelled) return;
++          setCachedStops(mode, stops);
++          setStopsGeoJson(enrichStops(stops));
++        })
++        .catch((err) => console.error("Failed to load stops:", err));
++    }
++
++    if (!cachedRoutes) {
++      fetchRoutes(mode)
++        .then((routes) => {
++          if (cancelled) return;
++          setCachedRoutes(mode, routes);
++          setRouteShapes(routes);
++        })
++        .catch((err) => console.error("Failed to load routes:", err));
++    }
+ 
+     return () => {
+       cancelled = true;
+diff --git a/packages/client/src/hooks/useTrainFeatures.ts b/packages/client/src/hooks/useTrainFeatures.ts
+index 87629a5..fee9ffe 100644
+--- a/packages/client/src/hooks/useTrainFeatures.ts
++++ b/packages/client/src/hooks/useTrainFeatures.ts
+@@ -77,6 +77,29 @@ export function useTrainFeatures(
+     shapeIndexRef.current = buildShapeIndex(routeShapes);
+   }, [routeShapes]);
+ 
++  // Clear interpolation tracking on mode change. Prior to mode-cache
++  // hydration this was handled implicitly by the data===null reset block
++  // below — useTrainPositions cleared data on flip. Now that cache hits
++  // hand back non-null data instantly, the data-null reset never fires,
++  // and the snapshot-shift effect would carry the previous mode's
++  // prevPositions/trackPaths across (LIRR positions interpolating into
++  // subway coordinates). Clearing here keeps interpolation honest;
++  // geojsonRef + the React `trains` state are left for the rebuild
++  // effect below to refill from the new mode's data.
++  //
++  // shapeIndexRef intentionally NOT touched here — the routes-build
++  // effect above is the sole writer for that ref. Resetting it here
++  // would race with the build effect when mode + routeShapes flip
++  // together (build runs first, mode-reset runs second, fresh index
++  // gets wiped, processSlice exits early on the empty-index guard).
++  useEffect(() => {
++    lastDataRef.current = null;
++    prevPositions.current = new Map();
++    currPositions.current = new Map();
++    trackPaths.current = new Map();
++    lastRenderedFraction.current = -1;
++  }, [mode]);
++
+   // Shift position snapshots when new data arrives (fast — no heavy computation)
+   useEffect(() => {
+     if (!data || data === lastDataRef.current) return;
+diff --git a/packages/client/src/hooks/useTrainPositions.ts b/packages/client/src/hooks/useTrainPositions.ts
+index b37f154..53be063 100644
+--- a/packages/client/src/hooks/useTrainPositions.ts
++++ b/packages/client/src/hooks/useTrainPositions.ts
+@@ -1,6 +1,7 @@
+ import { useState, useEffect, useRef, useCallback } from "react";
+ import type { Mode, TrainsResponse } from "@panoptrain/shared";
+ import { fetchTrains } from "../lib/api.js";
++import { getLastTrains, setLastTrains } from "../lib/modeCache.js";
+ 
+ // Injected by vite.config.ts from the repo-root POLL_INTERVAL_MS env var so
+ // this stays in lockstep with the server's polling cadence.
+@@ -26,14 +27,28 @@ export function useTrainPositions(mode: Mode | null): UseTrainPositionsResult {
+   // is mid-flight would briefly flash subway trains in the LIRR view.
+   const modeRef = useRef<Mode | null>(mode);
+ 
+-  // Clear stale data when the mode flips (or unloads, e.g. switching to
+-  // the airspace view) so we don't briefly show old trains while the new
+-  // mode's fetch is in flight.
++  // On mode flip: hydrate from the cache if we have a prior poll for the
++  // new mode (so the user sees the last-known trains instantly while a
++  // fresh poll lands in the background), otherwise clear so we don't
++  // briefly show the previous mode's trains. Airspace clears unconditionally.
+   useEffect(() => {
+     modeRef.current = mode;
+-    setData(null);
+-    setLastUpdated(null);
+-    setIsStale(false);
++    if (mode === null) {
++      setData(null);
++      setLastUpdated(null);
++      setIsStale(false);
++      return;
++    }
++    const cached = getLastTrains(mode);
++    if (cached) {
++      setData(cached.data);
++      setLastUpdated(cached.fetchedAt);
++      setIsStale(false);
++    } else {
++      setData(null);
++      setLastUpdated(null);
++      setIsStale(false);
++    }
+   }, [mode]);
+ 
+   const poll = useCallback(async () => {
+@@ -42,6 +57,7 @@ export function useTrainPositions(mode: Mode | null): UseTrainPositionsResult {
+     try {
+       const result = await fetchTrains(requested);
+       if (modeRef.current !== requested) return; // mode flipped mid-flight
++      setLastTrains(requested, result);
+       setData(result);
+       setLastUpdated(Date.now());
+       setIsStale(false);
+diff --git a/packages/client/src/lib/__tests__/modeCache.test.ts b/packages/client/src/lib/__tests__/modeCache.test.ts
+new file mode 100644
+index 0000000..ed3142b
+--- /dev/null
++++ b/packages/client/src/lib/__tests__/modeCache.test.ts
+@@ -0,0 +1,176 @@
++import { describe, it, expect, beforeEach } from "vitest";
++import type {
++  RoutesGeoJSON,
++  StopsGeoJSON,
++  TrainsResponse,
++} from "@panoptrain/shared";
++import {
++  clearMode,
++  getLastTrains,
++  getRoutes,
++  getStops,
++  setLastTrains,
++  setRoutes,
++  setStops,
++} from "../modeCache.js";
++
++function makeRoutes(routeId: string): RoutesGeoJSON {
++  return {
++    type: "FeatureCollection",
++    features: [
++      {
++        type: "Feature",
++        properties: { routeId, color: "888888", name: routeId },
++        geometry: {
++          type: "LineString",
++          coordinates: [
++            [-74, 40.7],
++            [-74.001, 40.7],
++          ],
++        },
++      },
++    ],
++  };
++}
++
++function makeStops(stopId: string): StopsGeoJSON {
++  return {
++    type: "FeatureCollection",
++    features: [
++      {
++        type: "Feature",
++        properties: { stopId, stopName: stopId },
++        geometry: { type: "Point", coordinates: [-74, 40.7] },
++      },
++    ],
++  };
++}
++
++function makeTrains(routeId: string): TrainsResponse {
++  return {
++    timestamp: 1_700_000_000_000,
++    count: 1,
++    trains: [
++      {
++        tripId: "t1",
++        routeId,
++        direction: 0,
++        latitude: 40.7,
++        longitude: -74,
++        bearing: null,
++        status: "IN_TRANSIT_TO",
++        currentStopId: "s1",
++        currentStopName: "S1",
++        nextStopId: null,
++        nextStopName: null,
++        destination: "Dest",
++        delay: null,
++        updatedAt: 1_700_000_000,
++      },
++    ],
++  };
++}
++
++beforeEach(() => {
++  clearMode("subway");
++  clearMode("lirr");
++});
++
++describe("modeCache — routes", () => {
++  it("returns undefined before any setRoutes call", () => {
++    expect(getRoutes("subway")).toBeUndefined();
++    expect(getRoutes("lirr")).toBeUndefined();
++  });
++
++  it("returns the same reference passed to setRoutes (so enrichCache WeakMap still hits)", () => {
++    const data = makeRoutes("1");
++    setRoutes("subway", data);
++    expect(getRoutes("subway")).toBe(data);
++  });
++
++  it("isolates subway and lirr (no cross-mode collision)", () => {
++    const subwayRoutes = makeRoutes("1");
++    const lirrRoutes = makeRoutes("Babylon");
++    setRoutes("subway", subwayRoutes);
++    setRoutes("lirr", lirrRoutes);
++    expect(getRoutes("subway")).toBe(subwayRoutes);
++    expect(getRoutes("lirr")).toBe(lirrRoutes);
++  });
++
++  it("overwrites on subsequent setRoutes for the same mode", () => {
++    const first = makeRoutes("1");
++    const second = makeRoutes("2");
++    setRoutes("subway", first);
++    setRoutes("subway", second);
++    expect(getRoutes("subway")).toBe(second);
++  });
++});
++
++describe("modeCache — stops", () => {
++  it("returns undefined before any setStops call", () => {
++    expect(getStops("subway")).toBeUndefined();
++  });
++
++  it("returns the same reference passed to setStops", () => {
++    const data = makeStops("S1");
++    setStops("lirr", data);
++    expect(getStops("lirr")).toBe(data);
++  });
++
++  it("isolates subway and lirr stops", () => {
++    const sub = makeStops("S1");
++    const lir = makeStops("Penn");
++    setStops("subway", sub);
++    setStops("lirr", lir);
++    expect(getStops("subway")).toBe(sub);
++    expect(getStops("lirr")).toBe(lir);
++  });
++});
++
++describe("modeCache — last trains", () => {
++  it("returns undefined before any setLastTrains call", () => {
++    expect(getLastTrains("subway")).toBeUndefined();
++  });
++
++  it("wraps the trains payload with a fetchedAt timestamp", () => {
++    const trains = makeTrains("1");
++    const before = Date.now();
++    setLastTrains("subway", trains);
++    const after = Date.now();
++    const cached = getLastTrains("subway");
++    expect(cached).toBeDefined();
++    expect(cached!.data).toBe(trains);
++    expect(cached!.fetchedAt).toBeGreaterThanOrEqual(before);
++    expect(cached!.fetchedAt).toBeLessThanOrEqual(after);
++  });
++
++  it("isolates subway and lirr trains", () => {
++    const sub = makeTrains("1");
++    const lir = makeTrains("Babylon");
++    setLastTrains("subway", sub);
++    setLastTrains("lirr", lir);
++    expect(getLastTrains("subway")!.data).toBe(sub);
++    expect(getLastTrains("lirr")!.data).toBe(lir);
++  });
++});
++
++describe("modeCache — clearMode", () => {
++  it("empties only the named mode's slots", () => {
++    setRoutes("subway", makeRoutes("1"));
++    setStops("subway", makeStops("S1"));
++    setLastTrains("subway", makeTrains("1"));
++    setRoutes("lirr", makeRoutes("Babylon"));
++    setStops("lirr", makeStops("Penn"));
++    setLastTrains("lirr", makeTrains("Babylon"));
++
++    clearMode("subway");
++
++    expect(getRoutes("subway")).toBeUndefined();
++    expect(getStops("subway")).toBeUndefined();
++    expect(getLastTrains("subway")).toBeUndefined();
++
++    expect(getRoutes("lirr")).toBeDefined();
++    expect(getStops("lirr")).toBeDefined();
++    expect(getLastTrains("lirr")).toBeDefined();
++  });
++});
+diff --git a/packages/client/src/lib/__tests__/shapeIndexLifecycle.test.ts b/packages/client/src/lib/__tests__/shapeIndexLifecycle.test.ts
+new file mode 100644
+index 0000000..e3aee59
+--- /dev/null
++++ b/packages/client/src/lib/__tests__/shapeIndexLifecycle.test.ts
+@@ -0,0 +1,113 @@
++import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
++import type { RoutesGeoJSON } from "@panoptrain/shared";
++import {
++  _resetTrackCachesForTests,
++  buildShapeIndex,
++  findTrackPath,
++  getTrackCacheSizes,
++} from "../trackInterpolation.js";
++
++/**
++ * Pins the lifecycle of `buildShapeIndex` w.r.t. mode-tab switching:
++ * calling it with the *same* routes object (the cache-hit path on tab
++ * re-entry) should be a no-op — return the previously-built index, leave
++ * the turf snap caches intact. Calling it with a *different* routes object
++ * (fresh fetch landing) must rebuild as today.
++ */
++function makeRoutes(features: Array<{ routeId: string; coords: [number, number][] }>): RoutesGeoJSON {
++  return {
++    type: "FeatureCollection",
++    features: features.map(({ routeId, coords }) => ({
++      type: "Feature",
++      properties: { routeId, color: "888888", name: routeId },
++      geometry: { type: "LineString", coordinates: coords },
++    })),
++  };
++}
++
++// jsdom doesn't implement requestIdleCallback, so buildShapeIndex routes
++// through setTimeout. Run the prewarm synchronously so cache-size assertions
++// reflect the post-prewarm state.
++beforeEach(() => {
++  vi.unstubAllGlobals();
++  vi.stubGlobal("setTimeout", ((fn: () => void) => {
++    fn();
++    return 0;
++  }) as unknown as typeof setTimeout);
++  _resetTrackCachesForTests();
++});
++
++// Restore real timers so later tests in the same worker don't inherit
++// the synchronous setTimeout stub (vitest reuses workers across files).
++afterEach(() => {
++  vi.unstubAllGlobals();
++});
++
++describe("buildShapeIndex — same routes reference", () => {
++  it("returns the same index object on a second call (memoized by ref)", () => {
++    const coords: [number, number][] = Array.from({ length: 20 }, (_, i) => [-74 + i * 0.001, 40.7]);
++    const routes = makeRoutes([{ routeId: "1", coords }]);
++    const first = buildShapeIndex(routes);
++    const second = buildShapeIndex(routes);
++    expect(second).toBe(first);
++  });
++});
++
++describe("buildShapeIndex — different routes object", () => {
++  it("returns a new index object when given a different routes payload", () => {
++    const coords: [number, number][] = Array.from({ length: 20 }, (_, i) => [-74 + i * 0.001, 40.7]);
++    const routes1 = makeRoutes([{ routeId: "1", coords }]);
++    const routes2 = makeRoutes([{ routeId: "2", coords }]);
++    const first = buildShapeIndex(routes1);
++    const second = buildShapeIndex(routes2);
++    expect(second).not.toBe(first);
++  });
++});
++
++describe("buildShapeIndex — back-and-forth between two routes payloads", () => {
++  // The real subway↔LIRR↔subway tab dance. The first build for each
++  // payload is the cold path; subsequent builds for the same payload
++  // must return the originally-cached index without rebuilding (so the
++  // warmed turf snap caches stay valid).
++  it("preserves the original index for each payload across alternating calls", () => {
++    const coordsA: [number, number][] = Array.from({ length: 20 }, (_, i) => [-74 + i * 0.001, 40.7]);
++    const coordsB: [number, number][] = Array.from({ length: 20 }, (_, i) => [-73 + i * 0.001, 40.8]);
++    const routesA = makeRoutes([{ routeId: "A", coords: coordsA }]);
++    const routesB = makeRoutes([{ routeId: "B", coords: coordsB }]);
++
++    const a1 = buildShapeIndex(routesA);
++    const b1 = buildShapeIndex(routesB);
++    const a2 = buildShapeIndex(routesA);
++    const b2 = buildShapeIndex(routesB);
++
++    expect(a2).toBe(a1);
++    expect(b2).toBe(b1);
++    expect(a1).not.toBe(b1);
++  });
++});
++
++describe("buildShapeIndex — cache lifecycle on rebuild", () => {
++  // snapCache is keyed by globally-unique shapeId, so it stays warm
++  // across builds. bestShapeCache values are direct ShapeData refs and
++  // its keys are routeId-based — and routeIds can collide between
++  // subway and LIRR — so a stale ref would route the wrong line through
++  // findTrackPath. Verify the asymmetric clear: snap survives, bestShape
++  // resets each rebuild.
++  it("clears bestShapeCache but preserves snapCache when building a new index", () => {
++    const coordsA: [number, number][] = Array.from({ length: 30 }, (_, i) => [-74 + i * 0.001, 40.7]);
++    const coordsB: [number, number][] = Array.from({ length: 30 }, (_, i) => [-73 + i * 0.001, 40.8]);
++    const routesA = makeRoutes([{ routeId: "A", coords: coordsA }]);
++    const routesB = makeRoutes([{ routeId: "B", coords: coordsB }]);
++
++    const indexA = buildShapeIndex(routesA);
++    findTrackPath(indexA, "A", coordsA[5]!, coordsA[10]!);
++    const after = getTrackCacheSizes();
++    expect(after.snap).toBeGreaterThan(0);
++    expect(after.bestShape).toBeGreaterThan(0);
++
++    buildShapeIndex(routesB);
++    const afterRebuild = getTrackCacheSizes();
++    expect(afterRebuild.snap).toBeGreaterThanOrEqual(after.snap); // snap kept + B's prewarm seeded more
++    expect(afterRebuild.bestShape).toBe(0); // bestShape cleared on rebuild
++  });
++});
+diff --git a/packages/client/src/lib/__tests__/trackInterpolation.test.ts b/packages/client/src/lib/__tests__/trackInterpolation.test.ts
+index 0c08922..5c437e7 100644
+--- a/packages/client/src/lib/__tests__/trackInterpolation.test.ts
++++ b/packages/client/src/lib/__tests__/trackInterpolation.test.ts
+@@ -1,6 +1,7 @@
+-import { describe, it, expect, beforeEach, vi } from "vitest";
++import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+ import type { RoutesGeoJSON } from "@panoptrain/shared";
+ import {
++  _resetTrackCachesForTests,
+   buildShapeIndex,
+   prewarmTrackCaches,
+   getTrackCacheSizes,
+@@ -28,13 +29,23 @@ function makeRoutes(features: Array<{ routeId: string; coords: [number, number][
+ 
+ // Use requestIdleCallback's polyfill path: jsdom doesn't define it, so
+ // `buildShapeIndex` already routes through setTimeout. Stub setTimeout so
+-// the prewarm runs synchronously inside this test.
++// the prewarm runs synchronously inside this test. Cache reset is needed
++// now that buildShapeIndex no longer clears snap/bestShape caches itself
++// (globally-unique shape IDs make per-build clears unnecessary in prod
++// but tests need explicit isolation).
+ beforeEach(() => {
+   vi.unstubAllGlobals();
+   vi.stubGlobal("setTimeout", ((fn: () => void) => {
+     fn();
+     return 0;
+   }) as unknown as typeof setTimeout);
++  _resetTrackCachesForTests();
++});
++
++// Restore real timers so later tests in the same worker don't inherit
++// the synchronous setTimeout stub (vitest reuses workers across files).
++afterEach(() => {
++  vi.unstubAllGlobals();
+ });
+ 
+ describe("prewarmTrackCaches", () => {
+@@ -58,19 +69,18 @@ describe("prewarmTrackCaches", () => {
+     expect(getTrackCacheSizes().snap).toBe(before);
+   });
+ 
+-  it("cancels a pending prewarm when buildShapeIndex runs again before idle fires", () => {
+-    // Defer setTimeout instead of running synchronously so we can simulate a
+-    // rebuild while the first prewarm is still pending. Without the in-module
+-    // cancellation, the first callback would run after the second
+-    // buildShapeIndex's clear and poison snapCache with shapeId-0 distances
+-    // from the stale index.
+-    const queued: Array<{ id: number; fn: () => void }> = [];
+-    let nextId = 1;
++  it("schedules independent prewarms when buildShapeIndex runs twice before idle fires", () => {
++    // The earlier shape-id-reset poisoning hazard required cancelling the
++    // pending prewarm before scheduling a new one. With shapeIdCounter
++    // now globally unique, both prewarms run safely back-to-back, and
++    // dropping the cancellation also fixes the WeakMap-cached re-entry
++    // path (a cancelled-but-never-rescheduled prewarm leaves the first
++    // mode permanently cold).
++    const queued: Array<() => void> = [];
+     const cleared: number[] = [];
+     vi.stubGlobal("setTimeout", ((fn: () => void) => {
+-      const id = nextId++;
+-      queued.push({ id, fn });
+-      return id;
++      queued.push(fn);
++      return queued.length;
+     }) as unknown as typeof setTimeout);
+     vi.stubGlobal("clearTimeout", ((id: number) => { cleared.push(id); }) as unknown as typeof clearTimeout);
+ 
+@@ -78,27 +88,20 @@ describe("prewarmTrackCaches", () => {
+     buildShapeIndex(makeRoutes([{ routeId: "A", coords: coords1 }]));
+     expect(queued).toHaveLength(1);
+ 
+-    // Mode flip / second load before the first idle fires.
++    // Mode flip / second load before the first idle fires — second
++    // prewarm queues alongside the first; neither is cancelled.
+     const coords2: [number, number][] = Array.from({ length: 30 }, (_, i) => [-73 + i * 0.001, 40.8]);
+     buildShapeIndex(makeRoutes([{ routeId: "B", coords: coords2 }]));
+ 
+-    // The first scheduled handle (id=1) must have been cancelled. The second
+-    // is still pending at id=2.
+-    expect(cleared).toContain(1);
++    expect(cleared).toEqual([]);
+     expect(queued).toHaveLength(2);
+ 
+-    // Fire what's still actually queued — clearTimeout in real browsers
+-    // removes the callback from the queue, so the test simulator skips
+-    // cancelled IDs to mirror that.
+-    for (const { id, fn } of queued) {
+-      if (cleared.includes(id)) continue;
+-      fn();
+-    }
+-    // Coords1 (~lat 40.7, lon -74) and coords2 (~lat 40.8, lon -73) live in
+-    // disjoint grid cells, so without cancellation we'd see entries from both
+-    // prewarms (12 keys). With cancellation, only coords2's 6 samples (every
+-    // 5th of 30 coords) survive.
+-    expect(getTrackCacheSizes().snap).toBe(6);
++    for (const fn of queued) fn();
++
++    // Coords1 (~lat 40.7, lon -74) and coords2 (~lat 40.8, lon -73) live
++    // in disjoint grid cells, so both prewarms' 6 samples each (every
++    // 5th of 30 coords) seed the cache without colliding.
++    expect(getTrackCacheSizes().snap).toBe(12);
+   });
+ 
+   it("tolerates degenerate shapes without throwing", () => {
+diff --git a/packages/client/src/lib/modeCache.ts b/packages/client/src/lib/modeCache.ts
+new file mode 100644
+index 0000000..8552cac
+--- /dev/null
++++ b/packages/client/src/lib/modeCache.ts
+@@ -0,0 +1,50 @@
++import type {
++  Mode,
++  RoutesGeoJSON,
++  StopsGeoJSON,
++  TrainsResponse,
++} from "@panoptrain/shared";
++
++export interface CachedTrains {
++  data: TrainsResponse;
++  fetchedAt: number;
++}
++
++// Module-level slot per mode. Lives outside React so tab-switch unmounts
++// don't lose the cached payload — re-mounting `useRouteShapes` /
++// `useTrainPositions` reads from here synchronously and skips the refetch
++// on cache hit. Keyed by `Mode` (not routeId) to sidestep the documented
++// subway/LIRR routeId collision.
++const routesByMode = new Map<Mode, RoutesGeoJSON>();
++const stopsByMode = new Map<Mode, StopsGeoJSON>();
++const trainsByMode = new Map<Mode, CachedTrains>();
++
++export function getRoutes(mode: Mode): RoutesGeoJSON | undefined {
++  return routesByMode.get(mode);
++}
++
++export function setRoutes(mode: Mode, data: RoutesGeoJSON): void {
++  routesByMode.set(mode, data);
++}
++
++export function getStops(mode: Mode): StopsGeoJSON | undefined {
++  return stopsByMode.get(mode);
++}
++
++export function setStops(mode: Mode, data: StopsGeoJSON): void {
++  stopsByMode.set(mode, data);
++}
++
++export function getLastTrains(mode: Mode): CachedTrains | undefined {
++  return trainsByMode.get(mode);
++}
++
++export function setLastTrains(mode: Mode, data: TrainsResponse): void {
++  trainsByMode.set(mode, { data, fetchedAt: Date.now() });
++}
++
++export function clearMode(mode: Mode): void {
++  routesByMode.delete(mode);
++  stopsByMode.delete(mode);
++  trainsByMode.delete(mode);
++}
+diff --git a/packages/client/src/lib/trackInterpolation.ts b/packages/client/src/lib/trackInterpolation.ts
+index 88d2f56..5b77a69 100644
+--- a/packages/client/src/lib/trackInterpolation.ts
++++ b/packages/client/src/lib/trackInterpolation.ts
+@@ -73,51 +73,83 @@ function cachedBestShape(
+   return { shape: result, tooFar: bestDist > 0.5 };
+ }
+ 
++// Memoize indexes per routes payload. WeakMap-keyed by the cached routes
++// object (from modeCache), so subway → LIRR → subway re-uses the original
++// subway index instead of rebuilding it. The cached routes object is
++// stable across remounts of useRouteShapes.
++const indexByRoutes = new WeakMap<RoutesGeoJSON, Record<string, ShapeData[]>>();
++
++// Globally-unique shape IDs. Per-build counters would collide across the
++// snap/bestShape caches when two indexes are alive simultaneously
++// (subway + LIRR after the first tab switch). With a global counter we
++// can keep both caches warm without the per-build clear that defeated
++// the purpose of memoizing indexes in the first place.
++let shapeIdCounter = 0;
++
+ /**
+  * Index route shapes by routeId for quick lookup.
+  * Each route may have multiple shapes (directions/branches).
+  */
+ export function buildShapeIndex(routes: RoutesGeoJSON): Record<string, ShapeData[]> {
++  const cached = indexByRoutes.get(routes);
++  if (cached) return cached;
++
++  // bestShapeCache values are direct ShapeData references; its keys are
++  // `${routeId}:gridCell`. snapCache values are numeric distances under
++  // globally-unique shapeId keys, so it stays warm across builds. But
++  // routeIds can collide between subway and LIRR (per the documented
++  // numeric-routeId overlap), and a stale ShapeData ref would route a
++  // LIRR train through the matching subway shape's geometry. Clear here
++  // — it'll re-warm naturally as cachedBestShape is exercised.
++  bestShapeCache.clear();
++
+   const index: Record<string, ShapeData[]> = {};
+-  let shapeId = 0;
+   for (const feature of routes.features) {
+     const routeId = feature.properties.routeId;
+     if (!index[routeId]) index[routeId] = [];
+     const coords = feature.geometry.coordinates;
+     if (coords.length < 2) continue;
+     const line = lineString(coords);
+-    index[routeId].push({ line, totalLength: turfLength(line), id: shapeId++ });
++    index[routeId].push({ line, totalLength: turfLength(line), id: shapeIdCounter++ });
+   }
+-  // Clear caches when shapes change
+-  snapCache.clear();
+-  bestShapeCache.clear();
+   // Schedule a snap-cache prewarm for idle time. Without it the first poll's
+   // hundreds of trains all hit cold caches and stall the main thread on Turf
+   // nearestPointOnLine. Idle scheduling keeps it off the first-paint path.
+   scheduleIdle(() => prewarmTrackCaches(index));
++  indexByRoutes.set(routes, index);
+   return index;
+ }
+ 
+-// Single-slot scheduler: a pending prewarm gets cancelled before a new one
+-// is scheduled. Without this, a rebuild that fires before the previous idle
+-// callback runs would let the stale callback populate snapCache with the
+-// old index's distances under shapeIds the new index has reused — a real
+-// poisoning hazard since shapeId resets to 0 each rebuild.
+-let pendingIdleHandle: number | undefined;
++/** Test helper — clear the snap/bestShape caches so each test starts
++ *  from a known empty state. The index WeakMap doesn't need explicit
++ *  clearing in tests because each test creates fresh routes objects
++ *  (always cache misses). Production code shouldn't call this; LRU
++ *  eviction handles cache growth and the WeakMap drops indexes when
++ *  the routes object is GC'd. */
++export function _resetTrackCachesForTests(): void {
++  snapCache.clear();
++  bestShapeCache.clear();
++}
++
++// Idle scheduler — fires the callback when the browser is idle, falls
++// back to setTimeout where requestIdleCallback isn't available.
++//
++// No cancellation here. The previous single-slot cancel-and-replace
++// existed to defend against shape-id reuse across rebuilds (each build
++// reset shapeId to 0, so a stale prewarm could poison snapCache with
++// distances under IDs the new index had reused). With shapeIdCounter
++// now globally unique, that hazard is gone — and cancelling actively
++// hurts: a user who flips subway → LIRR before subway's prewarm runs
++// would lose subway's prewarm permanently, since the WeakMap-cached
++// subway index returns instantly on re-entry without rescheduling.
+ const hasIdleApi = typeof globalThis.requestIdleCallback === "function";
+ 
+ function scheduleIdle(cb: () => void): void {
+-  if (pendingIdleHandle !== undefined) {
+-    if (hasIdleApi) globalThis.cancelIdleCallback!(pendingIdleHandle);
+-    else clearTimeout(pendingIdleHandle);
++  if (hasIdleApi) {
++    globalThis.requestIdleCallback!(cb);
++    return;
+   }
+-  const wrapped = () => {
+-    pendingIdleHandle = undefined;
+-    cb();
+-  };
+-  pendingIdleHandle = hasIdleApi
+-    ? globalThis.requestIdleCallback!(wrapped)
+-    : (setTimeout(wrapped, 1) as unknown as number);
++  setTimeout(cb, 1);
+ }
+ 
+ /** Expose snap/bestShape cache sizes for diagnostics and tests. */

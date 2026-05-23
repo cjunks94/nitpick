@@ -1,0 +1,280 @@
+diff --git a/packages/client/src/App.tsx b/packages/client/src/App.tsx
+index e796ccb..29a2eab 100644
+--- a/packages/client/src/App.tsx
++++ b/packages/client/src/App.tsx
+@@ -13,6 +13,14 @@ import { useAircraftPositions } from "./hooks/useAircraftPositions.js";
+ import { useMetars } from "./hooks/useMetars.js";
+ import { useTafs } from "./hooks/useTafs.js";
+ import { MOBILE_QUERY } from "./hooks/useIsMobile.js";
++import { fetchRoutes, fetchStops } from "./lib/api.js";
++import {
++  getRoutes as getCachedRoutes,
++  getStops as getCachedStops,
++  setRoutes as setCachedRoutes,
++  setStops as setCachedStops,
++} from "./lib/modeCache.js";
++import { cancelIdle, scheduleIdle } from "./lib/scheduleIdle.js";
+ 
+ export default function App() {
+   const [view, setView] = useView();
+@@ -84,6 +92,49 @@ export default function App() {
+     setPlanRoute(null);
+   }, [transitMode]);
+ 
++  // Background-preload the inactive mode's routes/stops on idle so the
++  // first cross-mode tab switch hits the modeCache instead of paying the
++  // multi-MB GeoJSON download + parse on the click. Runs whenever the
++  // active mode changes (or on first mount), schedules the fetches
++  // through requestIdleCallback so it doesn't fight the current mode's
++  // first paint. From airspace we preload subway only — most users
++  // landing on airspace are coming from or going to the transit view,
++  // and subway is the more common destination of the two.
++  useEffect(() => {
++    const inactive: Mode[] = transitMode === null
++      ? ["subway"]
++      : transitMode === "subway" ? ["lirr"] : ["subway"];
++
++    let cancelled = false;
++    const handle = scheduleIdle(() => {
++      if (cancelled) return;
++      for (const mode of inactive) {
++        if (!getCachedRoutes(mode)) {
++          fetchRoutes(mode)
++            .then((r) => {
++              // Re-check on resolve: if a foreground useRouteShapes
++              // fetch beat us to it, don't overwrite (would change the
++              // object identity and bust the WeakMap-cached shape index).
++              if (!cancelled && !getCachedRoutes(mode)) setCachedRoutes(mode, r);
++            })
++            .catch(() => { /* preload is best-effort */ });
++        }
++        if (!getCachedStops(mode)) {
++          fetchStops(mode)
++            .then((s) => {
++              if (!cancelled && !getCachedStops(mode)) setCachedStops(mode, s);
++            })
++            .catch(() => { /* preload is best-effort */ });
++        }
++      }
++    }, 1500);
++
++    return () => {
++      cancelled = true;
++      cancelIdle(handle);
++    };
++  }, [transitMode]);
++
+   // When a plan is active, surface only the routes that plan rides — these
+   // are the trains we want to spotlight on the map (PT-309).
+   const planRouteIds = useMemo<Set<string> | null>(() => {
+diff --git a/packages/client/src/hooks/useTrainFeatures.ts b/packages/client/src/hooks/useTrainFeatures.ts
+index fee9ffe..403656f 100644
+--- a/packages/client/src/hooks/useTrainFeatures.ts
++++ b/packages/client/src/hooks/useTrainFeatures.ts
+@@ -3,6 +3,7 @@ import type { Mode, TrainsResponse, TrainPosition, RoutesGeoJSON } from "@panopt
+ import { getRouteInfo } from "../lib/colors.js";
+ import { buildShapeIndex, findTrackPath, interpolateAlongPath } from "../lib/trackInterpolation.js";
+ import type { TrackPath } from "../lib/trackInterpolation.js";
++import { cancelIdle, scheduleIdle } from "../lib/scheduleIdle.js";
+ 
+ const POLL_INTERVAL = parseInt(import.meta.env.VITE_POLL_INTERVAL_MS ?? "30000", 10);
+ 
+@@ -70,11 +71,44 @@ export function useTrainFeatures(
+   // the feature set changes so filter toggles still trigger a redraw.
+   const lastRenderedFraction = useRef(-1);
+   const [trains, setTrains] = useState<TrainInfo[]>([]);
+-
+-  // Build shape index once when route shapes load
++  // Bumps whenever the deferred buildShapeIndex completes. Lives in
++  // React state (not a ref) so we can include it in the slice-scheduling
++  // effect's deps below. Without this, a data poll arriving BEFORE the
++  // idle build fires would capture an empty shapeIndexRef, exit the
++  // empty-index guard in processSlice, and leave trains on linear
++  // fallback until the NEXT live poll (~30s). Bumping triggers the
++  // slice scheduler to re-run with the now-populated index.
++  const [shapeIndexVersion, setShapeIndexVersion] = useState(0);
++
++  // Build shape index when route shapes load. Deferred via
++  // requestIdleCallback so the synchronous iteration over every feature
++  // (turfLength on each — expensive on the multi-MB LIRR payload) doesn't
++  // block the first render of the route lines on the map. Trains animate
++  // via the linear-distance fallback in processSlice for the brief
++  // window before the index lands; the WeakMap memo in buildShapeIndex
++  // means re-mounts (cache-hit tab switches) hit instantly because the
++  // routes ref is identical and we return the cached index.
+   useEffect(() => {
+-    if (!routeShapes) return;
+-    shapeIndexRef.current = buildShapeIndex(routeShapes);
++    if (!routeShapes) {
++      shapeIndexRef.current = {};
++      return;
++    }
++    // Clear synchronously so a data poll arriving before the idle
++    // build fires can't read the previous mode's stale shapes (subway
++    // and LIRR routeIds can collide; a stale subway index serving a
++    // LIRR train lookup would route the LIRR train onto subway
++    // geometry where keys overlap).
++    shapeIndexRef.current = {};
++    let cancelled = false;
++    const handle = scheduleIdle(() => {
++      if (cancelled) return;
++      shapeIndexRef.current = buildShapeIndex(routeShapes);
++      setShapeIndexVersion((v) => v + 1);
++    });
++    return () => {
++      cancelled = true;
++      cancelIdle(handle);
++    };
+   }, [routeShapes]);
+ 
+   // Clear interpolation tracking on mode change. Prior to mode-cache
+@@ -100,7 +134,10 @@ export function useTrainFeatures(
+     lastRenderedFraction.current = -1;
+   }, [mode]);
+ 
+-  // Shift position snapshots when new data arrives (fast — no heavy computation)
++  // Shift position snapshots when new data arrives (fast — no heavy
++  // computation). Split from the slice-scheduling effect below so we
++  // don't re-do the snapshot shift when only `shapeIndexVersion`
++  // changes (the cache-hit / deferred-build-completes path).
+   useEffect(() => {
+     if (!data || data === lastDataRef.current) return;
+     const isFirstPoll = lastDataRef.current === null;
+@@ -125,20 +162,29 @@ export function useTrainFeatures(
+     }
+     currPositions.current = positions;
+     snapshotTime.current = Date.now();
++  }, [data]);
++
++  // Schedule track-path computation in time-budgeted slices. Keyed on
++  // both `data` and `shapeIndexVersion` so it re-runs when the deferred
++  // shape-index build completes (otherwise a data poll arriving before
++  // idle would capture an empty ref, exit on the empty-index guard, and
++  // leave trains on linear fallback until the next live poll).
++  //
++  // Each slice runs until ~8ms elapsed, then yields — adapts to actual
++  // turf cost (warm cache processes hundreds per slice, cold cache fewer)
++  // without ever producing a 50ms+ handler. Trains without a computed
++  // path yet animate via linear fallback — the RAF loop already handles
++  // missing entries — so animation degrades gracefully from straight-line
++  // to on-rail as slices land.
++  useEffect(() => {
++    if (!data) return;
++    const index = shapeIndexRef.current;
++    if (Object.keys(index).length === 0) return;
+ 
+-    // Defer track path computation in time-budgeted slices so a large poll
+-    // (LIRR + subway combined, ~700 trains) doesn't block the main thread.
+-    // Each slice runs until ~8ms elapsed, then yields — adapts to actual
+-    // turf cost (warm cache processes hundreds per slice, cold cache fewer)
+-    // without ever producing a 50ms+ handler. Trains without a computed
+-    // path yet animate via linear fallback — the RAF loop already handles
+-    // missing entries — so animation degrades gracefully from straight-line
+-    // to on-rail as slices land.
+     const MIN_DIST_SQ = 0.002 * 0.002; // ~200m in degrees
+     const SLICE_BUDGET_MS = 8;
+     const trainsToProcess = data.trains;
+     const prev = prevPositions.current;
+-    const index = shapeIndexRef.current;
+ 
+     const paths = new Map<string, TrackPath>();
+     trackPaths.current = paths;
+@@ -156,7 +202,7 @@ export function useTrainFeatures(
+     };
+ 
+     const processSlice = (start: number, deadline?: IdleDeadline) => {
+-      if (cancelled || Object.keys(index).length === 0) return;
++      if (cancelled) return;
+       const sliceStart = performance.now();
+       let i = start;
+       while (i < trainsToProcess.length) {
+@@ -195,7 +241,7 @@ export function useTrainFeatures(
+       }
+       if (timeoutHandle !== null) clearTimeout(timeoutHandle);
+     };
+-  }, [data]);
++  }, [data, shapeIndexVersion]);
+ 
+   // Rebuild features when data or visibleRoutes change. When `data` is
+   // cleared on a mode flip (Subway↔LIRR↔Airspace), reset every cached
+diff --git a/packages/client/src/lib/scheduleIdle.ts b/packages/client/src/lib/scheduleIdle.ts
+new file mode 100644
+index 0000000..de53399
+--- /dev/null
++++ b/packages/client/src/lib/scheduleIdle.ts
+@@ -0,0 +1,27 @@
++/**
++ * requestIdleCallback with a setTimeout fallback for browsers that
++ * don't support the API (Safari < 16). Returns an opaque numeric
++ * handle that can be passed to `cancelIdle` for cleanup, so React
++ * effect cleanup paths can abort pending work on unmount.
++ *
++ * `timeoutMs` caps how long the browser is allowed to wait before
++ * forcing the callback even if it's still busy — prevents indefinite
++ * deferral on busy main threads. Default 200ms is a reasonable
++ * "soon-ish" upper bound for non-critical background work.
++ */
++const hasIdleApi = typeof globalThis.requestIdleCallback === "function";
++
++export function scheduleIdle(cb: () => void, timeoutMs = 200): number {
++  if (hasIdleApi) {
++    return globalThis.requestIdleCallback!(cb, { timeout: timeoutMs });
++  }
++  return setTimeout(cb, 1) as unknown as number;
++}
++
++export function cancelIdle(handle: number): void {
++  if (hasIdleApi) {
++    globalThis.cancelIdleCallback!(handle);
++  } else {
++    clearTimeout(handle);
++  }
++}
+diff --git a/packages/client/src/lib/trackInterpolation.ts b/packages/client/src/lib/trackInterpolation.ts
+index 5b77a69..f7a13ed 100644
+--- a/packages/client/src/lib/trackInterpolation.ts
++++ b/packages/client/src/lib/trackInterpolation.ts
+@@ -3,6 +3,7 @@ import along from "@turf/along";
+ import turfLength from "@turf/length";
+ import { lineString } from "@turf/helpers";
+ import type { RoutesGeoJSON } from "@panoptrain/shared";
++import { scheduleIdle } from "./scheduleIdle.js";
+ 
+ interface ShapeData {
+   line: ReturnType<typeof lineString>;
+@@ -131,26 +132,15 @@ export function _resetTrackCachesForTests(): void {
+   bestShapeCache.clear();
+ }
+ 
+-// Idle scheduler — fires the callback when the browser is idle, falls
+-// back to setTimeout where requestIdleCallback isn't available.
+-//
+-// No cancellation here. The previous single-slot cancel-and-replace
+-// existed to defend against shape-id reuse across rebuilds (each build
+-// reset shapeId to 0, so a stale prewarm could poison snapCache with
+-// distances under IDs the new index had reused). With shapeIdCounter
+-// now globally unique, that hazard is gone — and cancelling actively
+-// hurts: a user who flips subway → LIRR before subway's prewarm runs
+-// would lose subway's prewarm permanently, since the WeakMap-cached
+-// subway index returns instantly on re-entry without rescheduling.
+-const hasIdleApi = typeof globalThis.requestIdleCallback === "function";
+-
+-function scheduleIdle(cb: () => void): void {
+-  if (hasIdleApi) {
+-    globalThis.requestIdleCallback!(cb);
+-    return;
+-  }
+-  setTimeout(cb, 1);
+-}
++// scheduleIdle imported from ../scheduleIdle. We don't track or cancel
++// the handle here — the previous single-slot cancel-and-replace existed
++// to defend against shape-id reuse across rebuilds (each build reset
++// shapeId to 0, so a stale prewarm could poison snapCache with distances
++// under IDs the new index had reused). With shapeIdCounter now globally
++// unique, that hazard is gone — and cancelling actively hurts: a user
++// who flips subway → LIRR before subway's prewarm runs would lose
++// subway's prewarm permanently, since the WeakMap-cached subway index
++// returns instantly on re-entry without rescheduling.
+ 
+ /** Expose snap/bestShape cache sizes for diagnostics and tests. */
+ export function getTrackCacheSizes(): { snap: number; bestShape: number } {

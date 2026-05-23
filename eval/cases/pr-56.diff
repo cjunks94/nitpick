@@ -1,0 +1,1117 @@
+diff --git a/Dockerfile b/Dockerfile
+index 1965340..751d379 100644
+--- a/Dockerfile
++++ b/Dockerfile
+@@ -15,6 +15,12 @@ COPY packages/shared/ packages/shared/
+ COPY packages/server/ packages/server/
+ COPY packages/client/ packages/client/
+ 
++# Re-run install so per-package node_modules symlinks (tsc, vite) resolve.
++# The bare-package.json install at the prior layer was insufficient on its
++# own — diagnosing/fixing that properly is a separate task; this unblocks
++# the local cache-test build.
++RUN pnpm install --frozen-lockfile
++
+ # Build client static files
+ RUN pnpm --filter @panoptrain/client build
+ 
+diff --git a/packages/client/src/App.tsx b/packages/client/src/App.tsx
+index c6ae848..fb27e8e 100644
+--- a/packages/client/src/App.tsx
++++ b/packages/client/src/App.tsx
+@@ -11,6 +11,7 @@ import { useLineFilter } from "./hooks/useLineFilter.js";
+ import { useView, transitModeFor } from "./hooks/useView.js";
+ import { useAircraftPositions } from "./hooks/useAircraftPositions.js";
+ import { useMetars } from "./hooks/useMetars.js";
++import { useTafs } from "./hooks/useTafs.js";
+ import { MOBILE_QUERY } from "./hooks/useIsMobile.js";
+ 
+ export default function App() {
+@@ -31,9 +32,10 @@ export default function App() {
+   const { routeShapes, stopsGeoJson, loading: routeShapesLoading } = useRouteShapes(transitMode);
+   const { visibleRoutes, toggleRoute, toggleGroup, allOn, allOff } = useLineFilter(lineFilterMode);
+   const { aircraft } = useAircraftPositions(view === "airspace");
+-  // METAR feed only matters when the user can open an airport popup,
+-  // which only happens on the airspace tab. Same gate as aircraft.
++  // METAR + TAF feeds only matter when the user can open an airport
++  // popup, which only happens on the airspace tab. Same gate as aircraft.
+   const { reports: metarReports } = useMetars(view === "airspace");
++  const { reports: tafReports } = useTafs(view === "airspace");
+ 
+   // Airport popup state lives at App so the directory in FilterPanel can
+   // open the same popup as a map-click would. Token-based fly-to so the
+@@ -102,6 +104,7 @@ export default function App() {
+         routeShapesLoading={routeShapesLoading}
+         aircraft={aircraft}
+         metarReports={metarReports}
++        tafReports={tafReports}
+         popupAirportIata={popupAirportIata}
+         onPopupAirportIataChange={setPopupAirportIata}
+         flyToToken={flyToToken}
+diff --git a/packages/client/src/components/Map/AirportPopup.tsx b/packages/client/src/components/Map/AirportPopup.tsx
+index 3be50fe..12e5afd 100644
+--- a/packages/client/src/components/Map/AirportPopup.tsx
++++ b/packages/client/src/components/Map/AirportPopup.tsx
+@@ -1,6 +1,7 @@
+-import type { ReactNode } from "react";
++import { useState, type ReactNode } from "react";
+ import { Popup } from "react-map-gl/maplibre";
+-import type { Airport, FlightCategory, Frequencies, MetarReport, Runway } from "@panoptrain/shared";
++import type { Airport, FlightCategory, Frequencies, MetarReport, Runway, TafReport } from "@panoptrain/shared";
++import { findCurrentTafPeriod } from "../../lib/tafCurrentPeriod.js";
+ 
+ /** Click-to-inspect airport briefing — frequencies + runways + elevation
+  *  + current METAR weather. The same set a pilot looks up in the FAA
+@@ -13,10 +14,13 @@ interface AirportPopupProps {
+    *  ASOS outage, etc.). The popup omits the weather section entirely
+    *  rather than rendering empty rows. */
+   metar: MetarReport | null;
++  /** Current TAF forecast, null if no report available. Same omit-on-null
++   *  rule as the METAR section. */
++  taf: TafReport | null;
+   onClose: () => void;
+ }
+ 
+-export function AirportPopup({ airport, metar, onClose }: AirportPopupProps) {
++export function AirportPopup({ airport, metar, taf, onClose }: AirportPopupProps) {
+   return (
+     <Popup
+       className="airport-popup"
+@@ -44,6 +48,7 @@ export function AirportPopup({ airport, metar, onClose }: AirportPopupProps) {
+         <Header airport={airport} metar={metar} onClose={onClose} />
+         <StatsLine airport={airport} />
+         {metar && <MetarSection metar={metar} />}
++        {taf && <TafSection taf={taf} />}
+         <FrequenciesSection frequencies={airport.frequencies} />
+         <RunwaysSection runways={airport.runways} />
+       </div>
+@@ -277,3 +282,103 @@ function MetarSection({ metar }: { metar: MetarReport }) {
+     </div>
+   );
+ }
++
++function TafSection({ taf }: { taf: TafReport }) {
++  // Pin "now" via lazy useState init so toggling expand/collapse can't
++  // drift the active period across an FM boundary mid-session. The
++  // earlier inline `Date.now()` recomputed on every render — including
++  // the re-render triggered by setExpanded — defeating the intent.
++  const [now] = useState(() => Date.now());
++  const current = findCurrentTafPeriod(taf.forecasts, now);
++  const [expanded, setExpanded] = useState(false);
++
++  const issueLabel = formatTafTime(taf.issuedAt);
++  const validFromLabel = formatTafTime(taf.validFrom);
++  const validToLabel = formatTafTime(taf.validTo);
++
++  const summary = current ? formatPeriodSummary(current) : null;
++  // Show the period window so the pilot knows when the current
++  // forecast applies — useful when amendments or FM groups land soon.
++  const windowLabel = current
++    ? `${formatTafTime(current.timeFrom)} – ${formatTafTime(current.timeTo)}`
++    : null;
++
++  return (
++    <div style={{ marginBottom: 8 }}>
++      <SectionLabel>Forecast · issued {issueLabel}</SectionLabel>
++      {summary && windowLabel && (
++        <div style={{ marginBottom: 4 }}>
++          <div style={{ color: "#cbd5e1", fontSize: 11 }}>{windowLabel}</div>
++          <div style={{ color: "#e2e8f0", fontVariantNumeric: "tabular-nums" }}>{summary}</div>
++        </div>
++      )}
++      <div style={{ color: "#94a3b8", fontSize: 11 }}>
++        Valid {validFromLabel} – {validToLabel}
++      </div>
++      <button
++        type="button"
++        onClick={() => setExpanded((e) => !e)}
++        style={{
++          background: "none",
++          border: "none",
++          color: "#7dd3fc",
++          cursor: "pointer",
++          fontSize: 11,
++          padding: "4px 0 0",
++          textDecoration: "underline",
++        }}
++      >
++        {expanded ? "Hide raw TAF" : "Show raw TAF"}
++      </button>
++      {expanded && (
++        // Raw TAF is space-significant; preserve whitespace + wrap so
++        // long single-line TAFs don't blow out the popup width.
++        <pre
++          style={{
++            margin: "4px 0 0",
++            color: "#e2e8f0",
++            fontSize: 11,
++            fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
++            whiteSpace: "pre-wrap",
++            wordBreak: "break-word",
++            background: "rgba(15, 23, 42, 0.5)",
++            padding: 6,
++            borderRadius: 3,
++          }}
++        >
++          {taf.raw}
++        </pre>
++      )}
++    </div>
++  );
++}
++
++/** Format epoch ms as "DDHHmm Z" — matches how pilots read TAF/METAR
++ *  times (issuance "092247Z" = day 9, 22:47 UTC). Compact and
++ *  unambiguous. */
++function formatTafTime(epochMs: number): string {
++  const d = new Date(epochMs);
++  const day = String(d.getUTCDate()).padStart(2, "0");
++  const hh = String(d.getUTCHours()).padStart(2, "0");
++  const mm = String(d.getUTCMinutes()).padStart(2, "0");
++  return `${day}${hh}${mm}Z`;
++}
++
++function formatPeriodSummary(p: ReturnType<typeof findCurrentTafPeriod> & object): string {
++  const parts: string[] = [];
++  if (p.wind) {
++    if (p.wind.speedKt === 0) {
++      parts.push("Calm");
++    } else if (p.wind.speedKt !== null) {
++      const dir = p.wind.directionDeg === null
++        ? "VRB"
++        : `${String(p.wind.directionDeg).padStart(3, "0")}°`;
++      const gust = p.wind.gustKt !== null ? `G${p.wind.gustKt}` : "";
++      parts.push(`${dir} @ ${p.wind.speedKt}${gust} kt`);
++    }
++  }
++  if (p.visibilitySm !== null) parts.push(`${p.visibilitySm} sm`);
++  if (p.ceilingFt !== null) parts.push(`${p.ceilingFt.toLocaleString("en-US")} ft ceil`);
++  if (p.wxString) parts.push(p.wxString);
++  return parts.length > 0 ? parts.join(" · ") : "No change from observation";
++}
+diff --git a/packages/client/src/components/Map/TransitMap.tsx b/packages/client/src/components/Map/TransitMap.tsx
+index d22b2e7..d2e7c44 100644
+--- a/packages/client/src/components/Map/TransitMap.tsx
++++ b/packages/client/src/components/Map/TransitMap.tsx
+@@ -7,6 +7,7 @@ import type {
+   Mode,
+   RoutesGeoJSON,
+   StopsGeoJSON,
++  TafReport,
+   TripPlan,
+   LirrTripPlan,
+ } from "@panoptrain/shared";
+@@ -212,6 +213,9 @@ interface TransitMapProps {
+    *  tab or before the first poll lands; the popup renders its other rows
+    *  unchanged in that case. */
+   metarReports: Record<string, MetarReport>;
++  /** Current TAF forecasts keyed by ICAO. Same gating semantics as
++   *  metarReports — empty until the first poll lands. */
++  tafReports: Record<string, TafReport>;
+   /** Lifted to App so the panel directory and the map both drive the
+    *  same popup. Map clicks call onPopupAirportIataChange directly;
+    *  panel clicks go through App's handleSelectAirport which also
+@@ -236,7 +240,7 @@ const POPUP_OFFSET_PX = 120;
+  *  position so map curvature doesn't matter. */
+ const POPUP_AHEAD_DEG = 0.001;
+ 
+-export function TransitMap({ geojsonRef, interpolateFrame, trains, routeShapes, stops, planRoute, planRouteIds, mode, panelOpen, routeShapesLoading, aircraft, metarReports, popupAirportIata, onPopupAirportIataChange, flyToToken }: TransitMapProps) {
++export function TransitMap({ geojsonRef, interpolateFrame, trains, routeShapes, stops, planRoute, planRouteIds, mode, panelOpen, routeShapesLoading, aircraft, metarReports, tafReports, popupAirportIata, onPopupAirportIataChange, flyToToken }: TransitMapProps) {
+   const [popupTripId, setPopupTripId] = useState<string | null>(null);
+   const [iconsReady, setIconsReady] = useState(false);
+   const [followTripId, setFollowTripId] = useState<string | null>(null);
+@@ -1375,6 +1379,7 @@ export function TransitMap({ geojsonRef, interpolateFrame, trains, routeShapes,
+         <AirportPopup
+           airport={popupAirport}
+           metar={metarReports[popupAirport.icao] ?? null}
++          taf={tafReports[popupAirport.icao] ?? null}
+           onClose={() => setPopupAirportIata(null)}
+         />
+       )}
+diff --git a/packages/client/src/hooks/useTafs.ts b/packages/client/src/hooks/useTafs.ts
+new file mode 100644
+index 0000000..2e46c84
+--- /dev/null
++++ b/packages/client/src/hooks/useTafs.ts
+@@ -0,0 +1,79 @@
++import { useEffect, useState } from "react";
++import type { TafsResponse } from "@panoptrain/shared";
++import { fetchTafs } from "../lib/api.js";
++
++// TAFs amend mid-cycle but the base period changes only every 6 hours.
++// 10 minutes is a comfortable middle ground — fresh enough to surface
++// amendments soon after they're published, slow enough to not waste
++// server cycles when nothing's changed.
++const POLL_INTERVAL_MS = 10 * 60 * 1000;
++
++interface UseTafsResult {
++  /** Map keyed by ICAO ("KJFK"). Empty until the first poll lands. */
++  reports: TafsResponse["reports"];
++  source: "live" | "cached" | null;
++  error: Error | null;
++}
++
++/**
++ * Polls /api/airspace/taf at a slow cadence and exposes the parsed
++ * report map. Single bulk request for all airports — the popup looks
++ * up by ICAO. The 503 path (poller hasn't produced a snapshot yet) is
++ * treated as "no reports yet" rather than an error so the popup can
++ * render the rest of the briefing without weather instead of showing
++ * a failure state during cold boot.
++ */
++export function useTafs(enabled: boolean): UseTafsResult {
++  const [reports, setReports] = useState<TafsResponse["reports"]>({});
++  const [source, setSource] = useState<"live" | "cached" | null>(null);
++  const [error, setError] = useState<Error | null>(null);
++
++  useEffect(() => {
++    if (!enabled) {
++      setReports({});
++      setSource(null);
++      setError(null);
++      return;
++    }
++    let cancelled = false;
++    // Guard against overlapping polls — the TAF payload is ~25KB so a
++    // slow response could overlap a fresh interval tick, and a stale
++    // older response landing after a newer one would clobber fresh
++    // data. Skip the tick if the previous poll is still in flight.
++    let inFlight = false;
++    const poll = async () => {
++      if (inFlight) return;
++      inFlight = true;
++      try {
++        const res = await fetchTafs();
++        if (cancelled) return;
++        setReports(res.reports);
++        setSource(res.source);
++        setError(null);
++      } catch (err) {
++        if (cancelled) return;
++        const msg = err instanceof Error ? err.message : String(err);
++        if (msg.startsWith("API 503")) {
++          // Poller hasn't run yet (server just started). Surface as
++          // "no reports" rather than an error — the popup falls back
++          // to its non-TAF rows cleanly.
++          setReports({});
++          setSource(null);
++          setError(null);
++          return;
++        }
++        setError(err instanceof Error ? err : new Error(msg));
++      } finally {
++        inFlight = false;
++      }
++    };
++    poll();
++    const interval = setInterval(poll, POLL_INTERVAL_MS);
++    return () => {
++      cancelled = true;
++      clearInterval(interval);
++    };
++  }, [enabled]);
++
++  return { reports, source, error };
++}
+diff --git a/packages/client/src/lib/__tests__/tafCurrentPeriod.test.ts b/packages/client/src/lib/__tests__/tafCurrentPeriod.test.ts
+new file mode 100644
+index 0000000..7c1bafd
+--- /dev/null
++++ b/packages/client/src/lib/__tests__/tafCurrentPeriod.test.ts
+@@ -0,0 +1,68 @@
++import { describe, it, expect } from "vitest";
++import type { TafPeriod } from "@panoptrain/shared";
++import { findCurrentTafPeriod } from "../tafCurrentPeriod.js";
++
++function p(overrides: Partial<TafPeriod>): TafPeriod {
++  return {
++    timeFrom: 0,
++    timeTo: 0,
++    fcstChange: null,
++    probability: null,
++    wind: null,
++    visibilitySm: null,
++    ceilingFt: null,
++    wxString: null,
++    ...overrides,
++  };
++}
++
++describe("findCurrentTafPeriod", () => {
++  const T0 = 1_000;
++  const T1 = 2_000;
++  const T2 = 3_000;
++  const T3 = 4_000;
++
++  it("returns null on an empty forecasts array", () => {
++    expect(findCurrentTafPeriod([], T0)).toBeNull();
++  });
++
++  it("returns null when there are no base (null/FM) periods — only overlays", () => {
++    expect(
++      findCurrentTafPeriod(
++        [p({ fcstChange: "TEMPO", timeFrom: T0, timeTo: T1 })],
++        T0,
++      ),
++    ).toBeNull();
++  });
++
++  it("picks the latest FM whose start is ≤ now, ignoring TEMPO/BECMG overlays", () => {
++    const forecasts: TafPeriod[] = [
++      p({ fcstChange: null, timeFrom: T0, timeTo: T1, wind: { directionDeg: 100, speedKt: 5, gustKt: null } }),
++      p({ fcstChange: "TEMPO", timeFrom: T0, timeTo: T1, visibilitySm: 3 }),
++      p({ fcstChange: "FM", timeFrom: T1, timeTo: T2, wind: { directionDeg: 200, speedKt: 10, gustKt: null } }),
++      p({ fcstChange: "FM", timeFrom: T2, timeTo: T3, wind: { directionDeg: 300, speedKt: 15, gustKt: null } }),
++    ];
++    // Now sits inside the second FM window — should pick that, not the
++    // earlier base or the TEMPO overlay.
++    const result = findCurrentTafPeriod(forecasts, T1 + 500);
++    expect(result?.wind?.directionDeg).toBe(200);
++  });
++
++  it("falls back to the first base period when `now` precedes the entire TAF", () => {
++    const forecasts: TafPeriod[] = [
++      p({ fcstChange: null, timeFrom: T1, timeTo: T2, wind: { directionDeg: 100, speedKt: 5, gustKt: null } }),
++      p({ fcstChange: "FM", timeFrom: T2, timeTo: T3, wind: { directionDeg: 200, speedKt: 10, gustKt: null } }),
++    ];
++    const result = findCurrentTafPeriod(forecasts, T0);
++    expect(result?.wind?.directionDeg).toBe(100);
++  });
++
++  it("stays on the last base period when `now` is past the TAF's validity", () => {
++    const forecasts: TafPeriod[] = [
++      p({ fcstChange: null, timeFrom: T0, timeTo: T1, wind: { directionDeg: 100, speedKt: 5, gustKt: null } }),
++      p({ fcstChange: "FM", timeFrom: T1, timeTo: T2, wind: { directionDeg: 200, speedKt: 10, gustKt: null } }),
++    ];
++    const result = findCurrentTafPeriod(forecasts, T3 + 1000);
++    expect(result?.wind?.directionDeg).toBe(200);
++  });
++});
+diff --git a/packages/client/src/lib/api.ts b/packages/client/src/lib/api.ts
+index b7d0f07..b0f171e 100644
+--- a/packages/client/src/lib/api.ts
++++ b/packages/client/src/lib/api.ts
+@@ -7,6 +7,7 @@ import type {
+   LirrPlanResponse,
+   AirspaceResponse,
+   MetarsResponse,
++  TafsResponse,
+ } from "@panoptrain/shared";
+ 
+ async function fetchJson<T>(path: string): Promise<T> {
+@@ -63,3 +64,9 @@ export function fetchAirspaceAircraft(): Promise<AirspaceResponse> {
+ export function fetchMetars(): Promise<MetarsResponse> {
+   return fetchJson<MetarsResponse>("/airspace/metar");
+ }
++
++/** Current TAF forecasts for every NYC-metro airport. Bulk endpoint —
++ *  payload is ~25KB (forecast periods are richer than METAR observations). */
++export function fetchTafs(): Promise<TafsResponse> {
++  return fetchJson<TafsResponse>("/airspace/taf");
++}
+diff --git a/packages/client/src/lib/tafCurrentPeriod.ts b/packages/client/src/lib/tafCurrentPeriod.ts
+new file mode 100644
+index 0000000..749a12a
+--- /dev/null
++++ b/packages/client/src/lib/tafCurrentPeriod.ts
+@@ -0,0 +1,31 @@
++import type { TafPeriod } from "@panoptrain/shared";
++
++/**
++ * Pick the active base period for a TAF at a given moment.
++ *
++ * TAFs are composed of a base forecast (fcstChange === null at index 0,
++ * or "FM" for subsequent base shifts) plus optional overlay groups
++ * (TEMPO, BECMG, PROB) that modify the base during a sub-window. For
++ * the popup's at-a-glance summary, we surface the current base period
++ * — overlay groups remain visible in the raw TAF if the pilot expands.
++ *
++ * Returns null if there are no base periods at all (degenerate TAF).
++ */
++export function findCurrentTafPeriod(
++  forecasts: TafPeriod[],
++  now: number = Date.now(),
++): TafPeriod | null {
++  const basePeriods = forecasts.filter(
++    (p) => p.fcstChange === null || p.fcstChange === "FM",
++  );
++  if (basePeriods.length === 0) return null;
++
++  // Latest base period whose start is at or before `now` is the active
++  // one. If `now` precedes the entire TAF (just-issued, viewer ahead),
++  // fall back to the first base period as the best representation.
++  let active: TafPeriod | null = null;
++  for (const p of basePeriods) {
++    if (p.timeFrom <= now) active = p;
++  }
++  return active ?? basePeriods[0];
++}
+diff --git a/packages/e2e/fixtures/upstream/aviationweather-taf.json b/packages/e2e/fixtures/upstream/aviationweather-taf.json
+new file mode 100644
+index 0000000..5d3a021
+--- /dev/null
++++ b/packages/e2e/fixtures/upstream/aviationweather-taf.json
+@@ -0,0 +1 @@
++[{"icaoId":"KISP","dbPopTime":"2026-05-09T22:47:35.426Z","bulletinTime":"2026-05-09T22:47:00.000Z","issueTime":"2026-05-09T22:47:00.000Z","validTimeFrom":1778367600,"validTimeTo":1778436000,"rawTAF":"TAF KISP 092247Z 0923/1018 19010KT 5SM -SHRA BR BKN007 OVC012 TEMPO 0923/0924 3SM SHRA BR FM100000 18009KT 6SM BR VCSH BKN007 OVC012 FM100100 16005KT 4SM BR OVC007 FM100400 VRB03KT 2SM BR OVC004 TEMPO 1007/1011 1/2SM FG VV002 FM101400 22006KT 6SM BR SCT007 FM101600 23009KT P6SM FEW030 SCT250","mostRecent":1,"remarks":" AMD","lat":40.79389,"lon":-73.10183,"elev":25,"prior":5,"name":"Islip/Macarthur Arpt","fcsts":[{"timeFrom":1778367600,"timeTo":1778371200,"timeBec":null,"fcstChange":null,"probability":null,"wdir":190,"wspd":10,"wgst":null,"wshearHgt":null,"wshearDir":null,"wshearSpd":null,"visib":5,"altim":null,"vertVis":null,"wxString":"-SHRA BR","notDecoded":null,"clouds":[{"cover":"BKN","base":700,"type":null},{"cover":"OVC","base":1200,"type":null}],"icgTurb":[],"temp":[]},{"timeFrom":1778367600,"timeTo":1778371200,"timeBec":null,"fcstChange":"TEMPO","probability":null,"wdir":null,"wspd":null,"wgst":null,"wshearHgt":null,"wshearDir":null,"wshearSpd":null,"visib":3,"altim":null,"vertVis":null,"wxString":"SHRA BR","notDecoded":null,"clouds":[],"icgTurb":[],"temp":[]},{"timeFrom":1778371200,"timeTo":1778374800,"timeBec":null,"fcstChange":"FM","probability":null,"wdir":180,"wspd":9,"wgst":null,"wshearHgt":null,"wshearDir":null,"wshearSpd":null,"visib":6,"altim":null,"vertVis":null,"wxString":"BR VCSH","notDecoded":null,"clouds":[{"cover":"BKN","base":700,"type":null},{"cover":"OVC","base":1200,"type":null}],"icgTurb":[],"temp":[]},{"timeFrom":1778374800,"timeTo":1778385600,"timeBec":null,"fcstChange":"FM","probability":null,"wdir":160,"wspd":5,"wgst":null,"wshearHgt":null,"wshearDir":null,"wshearSpd":null,"visib":4,"altim":null,"vertVis":null,"wxString":"BR","notDecoded":null,"clouds":[{"cover":"OVC","base":700,"type":null}],"icgTurb":[],"temp":[]},{"timeFrom":1778385600,"timeTo":1778421600,"timeBec":null,"fcstChange":"FM","probability":null,"wdir":"VRB","wspd":3,"wgst":null,"wshearHgt":null,"wshearDir":null,"wshearSpd":null,"visib":2,"altim":null,"vertVis":null,"wxString":"BR","notDecoded":null,"clouds":[{"cover":"OVC","base":400,"type":null}],"icgTurb":[],"temp":[]},{"timeFrom":1778396400,"timeTo":1778410800,"timeBec":null,"fcstChange":"TEMPO","probability":null,"wdir":null,"wspd":null,"wgst":null,"wshearHgt":null,"wshearDir":null,"wshearSpd":null,"visib":0.5,"altim":null,"vertVis":200,"wxString":"FG","notDecoded":null,"clouds":[{"cover":"OVX","base":null,"type":null}],"icgTurb":[],"temp":[]},{"timeFrom":1778421600,"timeTo":1778428800,"timeBec":null,"fcstChange":"FM","probability":null,"wdir":220,"wspd":6,"wgst":null,"wshearHgt":null,"wshearDir":null,"wshearSpd":null,"visib":6,"altim":null,"vertVis":null,"wxString":"BR","notDecoded":null,"clouds":[{"cover":"SCT","base":700,"type":null}],"icgTurb":[],"temp":[]},{"timeFrom":1778428800,"timeTo":1778436000,"timeBec":null,"fcstChange":"FM","probability":null,"wdir":230,"wspd":9,"wgst":null,"wshearHgt":null,"wshearDir":null,"wshearSpd":null,"visib":"6+","altim":null,"vertVis":null,"wxString":null,"notDecoded":null,"clouds":[{"cover":"FEW","base":3000,"type":null},{"cover":"SCT","base":25000,"type":null}],"icgTurb":[],"temp":[]}]},{"icaoId":"KTEB","dbPopTime":"2026-05-09T22:09:15.936Z","bulletinTime":"2026-05-09T22:09:00.000Z","issueTime":"2026-05-09T22:09:00.000Z","validTimeFrom":1778364000,"validTimeTo":1778457600,"rawTAF":"TAF KTEB 092209Z 0922/1024 VRB04KT P6SM BKN035 OVC045 TEMPO 0922/0923 3SM -SHRA BR BKN025 FM100200 VRB04KT 4SM BR SCT008 OVC015 TEMPO 1003/1006 BKN008 FM100600 VRB03KT 3SM BR FEW004 OVC007 TEMPO 1007/1011 1SM BR OVC004 FM101300 27005KT 6SM BR SCT004 BKN250 FM101600 25008KT P6SM SCT050 BKN100 PROB30 1020/1024 -SHRA BKN050","mostRecent":1,"remarks":" AMD","lat":40.85898,"lon":-74.05617,"elev":3,"prior":6,"name":"Teterboro Arpt","fcsts":[{"timeFrom":1778364000,"timeTo":1778378400,"timeBec":null,"fcstChange":null,"probability":null,"wdir":"VRB","wspd":4,"wgst":null,"wshearHgt":null,"wshearDir":null,"wshearSpd":null,"visib":"6+","altim":null,"vertVis":null,"wxString":null,"notDecoded":null,"clouds":[{"cover":"BKN","base":3500,"type":null},{"cover":"OVC","base":4500,"type":null}],"icgTurb":[],"temp":[]},{"timeFrom":1778364000,"timeTo":1778367600,"timeBec":null,"fcstChange":"TEMPO","probability":null,"wdir":null,"wspd":null,"wgst":null,"wshearHgt":null,"wshearDir":null,"wshearSpd":null,"visib":3,"altim":null,"vertVis":null,"wxString":"-SHRA BR","notDecoded":null,"clouds":[{"cover":"BKN","base":2500,"type":null}],"icgTurb":[],"temp":[]},{"timeFrom":1778378400,"timeTo":1778392800,"timeBec":null,"fcstChange":"FM","probability":null,"wdir":"VRB","wspd":4,"wgst":null,"wshearHgt":null,"wshearDir":null,"wshearSpd":null,"visib":4,"altim":null,"vertVis":null,"wxString":"BR","notDecoded":null,"clouds":[{"cover":"SCT","base":800,"type":null},{"cover":"OVC","base":1500,"type":null}],"icgTurb":[],"temp":[]},{"timeFrom":1778382000,"timeTo":1778392800,"timeBec":null,"fcstChange":"TEMPO","probability":null,"wdir":null,"wspd":null,"wgst":null,"wshearHgt":null,"wshearDir":null,"wshearSpd":null,"visib":"","altim":null,"vertVis":null,"wxString":null,"notDecoded":null,"clouds":[{"cover":"BKN","base":800,"type":null}],"icgTurb":[],"temp":[]},{"timeFrom":1778392800,"timeTo":1778418000,"timeBec":null,"fcstChange":"FM","probability":null,"wdir":"VRB","wspd":3,"wgst":null,"wshearHgt":null,"wshearDir":null,"wshearSpd":null,"visib":3,"altim":null,"vertVis":null,"wxString":"BR","notDecoded":null,"clouds":[{"cover":"FEW","base":400,"type":null},{"cover":"OVC","base":700,"type":null}],"icgTurb":[],"temp":[]},{"timeFrom":1778396400,"timeTo":1778410800,"timeBec":null,"fcstChange":"TEMPO","probability":null,"wdir":null,"wspd":null,"wgst":null,"wshearHgt":null,"wshearDir":null,"wshearSpd":null,"visib":1,"altim":null,"vertVis":null,"wxString":"BR","notDecoded":null,"clouds":[{"cover":"OVC","base":400,"type":null}],"icgTurb":[],"temp":[]},{"timeFrom":1778418000,"timeTo":1778428800,"timeBec":null,"fcstChange":"FM","probability":null,"wdir":270,"wspd":5,"wgst":null,"wshearHgt":null,"wshearDir":null,"wshearSpd":null,"visib":6,"altim":null,"vertVis":null,"wxString":"BR","notDecoded":null,"clouds":[{"cover":"SCT","base":400,"type":null},{"cover":"BKN","base":25000,"type":null}],"icgTurb":[],"temp":[]},{"timeFrom":1778428800,"timeTo":1778457600,"timeBec":null,"fcstChange":"FM","probability":null,"wdir":250,"wspd":8,"wgst":null,"wshearHgt":null,"wshearDir":null,"wshearSpd":null,"visib":"6+","altim":null,"vertVis":null,"wxString":null,"notDecoded":null,"clouds":[{"cover":"SCT","base":5000,"type":null},{"cover":"BKN","base":10000,"type":null}],"icgTurb":[],"temp":[]},{"timeFrom":1778443200,"timeTo":1778457600,"timeBec":null,"fcstChange":"PROB","probability":30,"wdir":null,"wspd":null,"wgst":null,"wshearHgt":null,"wshearDir":null,"wshearSpd":null,"visib":"","altim":null,"vertVis":null,"wxString":"-SHRA","notDecoded":null,"clouds":[{"cover":"BKN","base":5000,"type":null}],"icgTurb":[],"temp":[]}]},{"icaoId":"KHPN","dbPopTime":"2026-05-09T21:08:39.376Z","bulletinTime":"2026-05-09T21:08:00.000Z","issueTime":"2026-05-09T21:08:00.000Z","validTimeFrom":1778360400,"validTimeTo":1778436000,"rawTAF":"TAF KHPN 092108Z 0921/1018 VRB05KT 6SM -RA BR SCT004 OVC025 TEMPO 0921/0923 2SM -RA BR BKN004 OVC025 FM092300 VRB03KT 6SM BR SCT007 OVC025 FM100200 VRB02KT 4SM BR BKN007 OVC015 TEMPO 1003/1006 2SM BR BKN004 FM100600 VRB04KT 2SM BR OVC004 TEMPO 1007/1011 1/2SM FG VV002 FM101300 27005KT 5SM BR SCT004 SCT250 FM101500 26007KT P6SM FEW030 SCT250 AMD NOT SKED","mostRecent":1,"remarks":" AMD","lat":41.06236,"lon":-73.70455,"elev":113,"prior":5,"name":"White Plains/Westchester Cnty","fcsts":[{"timeFrom":1778360400,"timeTo":1778367600,"timeBec":null,"fcstChange":null,"probability":null,"wdir":"VRB","wspd":5,"wgst":null,"wshearHgt":null,"wshearDir":null,"wshearSpd":null,"visib":6,"altim":null,"vertVis":null,"wxString":"-RA BR","notDecoded":null,"clouds":[{"cover":"SCT","base":400,"type":null},{"cover":"OVC","base":2500,"type":null}],"icgTurb":[],"temp":[]},{"timeFrom":1778360400,"timeTo":1778367600,"timeBec":null,"fcstChange":"TEMPO","probability":null,"wdir":null,"wspd":null,"wgst":null,"wshearHgt":null,"wshearDir":null,"wshearSpd":null,"visib":2,"altim":null,"vertVis":null,"wxString":"-RA BR","notDecoded":null,"clouds":[{"cover":"BKN","base":400,"type":null},{"cover":"OVC","base":2500,"type":null}],"icgTurb":[],"temp":[]},{"timeFrom":1778367600,"timeTo":1778378400,"timeBec":null,"fcstChange":"FM","probability":null,"wdir":"VRB","wspd":3,"wgst":null,"wshearHgt":null,"wshearDir":null,"wshearSpd":null,"visib":6,"altim":null,"vertVis":null,"wxString":"BR","notDecoded":null,"clouds":[{"cover":"SCT","base":700,"type":null},{"cover":"OVC","base":2500,"type":null}],"icgTurb":[],"temp":[]},{"timeFrom":1778378400,"timeTo":1778392800,"timeBec":null,"fcstChange":"FM","probability":null,"wdir":"VRB","wspd":2,"wgst":null,"wshearHgt":null,"wshearDir":null,"wshearSpd":null,"visib":4,"altim":null,"vertVis":null,"wxString":"BR","notDecoded":null,"clouds":[{"cover":"BKN","base":700,"type":null},{"cover":"OVC","base":1500,"type":null}],"icgTurb":[],"temp":[]},{"timeFrom":1778382000,"timeTo":1778392800,"timeBec":null,"fcstChange":"TEMPO","probability":null,"wdir":null,"wspd":null,"wgst":null,"wshearHgt":null,"wshearDir":null,"wshearSpd":null,"visib":2,"altim":null,"vertVis":null,"wxString":"BR","notDecoded":null,"clouds":[{"cover":"BKN","base":400,"type":null}],"icgTurb":[],"temp":[]},{"timeFrom":1778392800,"timeTo":1778418000,"timeBec":null,"fcstChange":"FM","probability":null,"wdir":"VRB","wspd":4,"wgst":null,"wshearHgt":null,"wshearDir":null,"wshearSpd":null,"visib":2,"altim":null,"vertVis":null,"wxString":"BR","notDecoded":null,"clouds":[{"cover":"OVC","base":400,"type":null}],"icgTurb":[],"temp":[]},{"timeFrom":1778396400,"timeTo":1778410800,"timeBec":null,"fcstChange":"TEMPO","probability":null,"wdir":null,"wspd":null,"wgst":null,"wshearHgt":null,"wshearDir":null,"wshearSpd":null,"visib":0.5,"altim":null,"vertVis":200,"wxString":"FG","notDecoded":null,"clouds":[{"cover":"OVX","base":null,"type":null}],"icgTurb":[],"temp":[]},{"timeFrom":1778418000,"timeTo":1778425200,"timeBec":null,"fcstChange":"FM","probability":null,"wdir":270,"wspd":5,"wgst":null,"wshearHgt":null,"wshearDir":null,"wshearSpd":null,"visib":5,"altim":null,"vertVis":null,"wxString":"BR","notDecoded":null,"clouds":[{"cover":"SCT","base":400,"type":null},{"cover":"SCT","base":25000,"type":null}],"icgTurb":[],"temp":[]},{"timeFrom":1778425200,"timeTo":1778436000,"timeBec":null,"fcstChange":"FM","probability":null,"wdir":260,"wspd":7,"wgst":null,"wshearHgt":null,"wshearDir":null,"wshearSpd":null,"visib":"6+","altim":null,"vertVis":null,"wxString":null,"notDecoded":null,"clouds":[{"cover":"FEW","base":3000,"type":null},{"cover":"SCT","base":25000,"type":null}],"icgTurb":[],"temp":[]}]},{"icaoId":"KEWR","dbPopTime":"2026-05-09T20:44:18.023Z","bulletinTime":"2026-05-09T20:44:00.000Z","issueTime":"2026-05-09T20:44:00.000Z","validTimeFrom":1778360400,"validTimeTo":1778457600,"rawTAF":"TAF KEWR 092044Z 0921/1024 32005KT 6SM -SHRA BR SCT020 OVC040 TEMPO 0921/0922 3SM SHRA BR BKN020 OVC040 FM092200 VRB05KT P6SM SCT025 OVC040 FM100200 VRB05KT 6SM BR SCT007 BKN015 TEMPO 1003/1006 4SM BR BKN007 FM100600 VRB03KT 4SM BR FEW004 OVC007 TEMPO 1007/1011 2SM BR BKN004 OVC006 FM101300 27005KT 6SM BR SCT006 SCT250 FM101600 26008KT P6SM FEW050 SCT250 FM101900 26010KT P6SM SCT050 BKN100 PROB30 1020/1024 -SHRA BKN050","mostRecent":1,"remarks":" AMD","lat":40.68277,"lon":-74.16924,"elev":2,"prior":5,"name":"Newark Intl","fcsts":[{"timeFrom":1778360400,"timeTo":1778364000,"timeBec":null,"fcstChange":null,"probability":null,"wdir":320,"wspd":5,"wgst":null,"wshearHgt":null,"wshearDir":null,"wshearSpd":null,"visib":6,"altim":null,"vertVis":null,"wxString":"-SHRA BR","notDecoded":null,"clouds":[{"cover":"SCT","base":2000,"type":null},{"cover":"OVC","base":4000,"type":null}],"icgTurb":[],"temp":[]},{"timeFrom":1778360400,"timeTo":1778364000,"timeBec":null,"fcstChange":"TEMPO","probability":null,"wdir":null,"wspd":null,"wgst":null,"wshearHgt":null,"wshearDir":null,"wshearSpd":null,"visib":3,"altim":null,"vertVis":null,"wxString":"SHRA BR","notDecoded":null,"clouds":[{"cover":"BKN","base":2000,"type":null},{"cover":"OVC","base":4000,"type":null}],"icgTurb":[],"temp":[]},{"timeFrom":1778364000,"timeTo":1778378400,"timeBec":null,"fcstChange":"FM","probability":null,"wdir":"VRB","wspd":5,"wgst":null,"wshearHgt":null,"wshearDir":null,"wshearSpd":null,"visib":"6+","altim":null,"vertVis":null,"wxString":null,"notDecoded":null,"clouds":[{"cover":"SCT","base":2500,"type":null},{"cover":"OVC","base":4000,"type":null}],"icgTurb":[],"temp":[]},{"timeFrom":1778378400,"timeTo":1778392800,"timeBec":null,"fcstChange":"FM","probability":null,"wdir":"VRB","wspd":5,"wgst":null,"wshearHgt":null,"wshearDir":null,"wshearSpd":null,"visib":6,"altim":null,"vertVis":null,"wxString":"BR","notDecoded":null,"clouds":[{"cover":"SCT","base":700,"type":null},{"cover":"BKN","base":1500,"type":null}],"icgTurb":[],"temp":[]},{"timeFrom":1778382000,"timeTo":1778392800,"timeBec":null,"fcstChange":"TEMPO","probability":null,"wdir":null,"wspd":null,"wgst":null,"wshearHgt":null,"wshearDir":null,"wshearSpd":null,"visib":4,"altim":null,"vertVis":null,"wxString":"BR","notDecoded":null,"clouds":[{"cover":"BKN","base":700,"type":null}],"icgTurb":[],"temp":[]},{"timeFrom":1778392800,"timeTo":1778418000,"timeBec":null,"fcstChange":"FM","probability":null,"wdir":"VRB","wspd":3,"wgst":null,"wshearHgt":null,"wshearDir":null,"wshearSpd":null,"visib":4,"altim":null,"vertVis":null,"wxString":"BR","notDecoded":null,"clouds":[{"cover":"FEW","base":400,"type":null},{"cover":"OVC","base":700,"type":null}],"icgTurb":[],"temp":[]},{"timeFrom":1778396400,"timeTo":1778410800,"timeBec":null,"fcstChange":"TEMPO","probability":null,"wdir":null,"wspd":null,"wgst":null,"wshearHgt":null,"wshearDir":null,"wshearSpd":null,"visib":2,"altim":null,"vertVis":null,"wxString":"BR","notDecoded":null,"clouds":[{"cover":"BKN","base":400,"type":null},{"cover":"OVC","base":600,"type":null}],"icgTurb":[],"temp":[]},{"timeFrom":1778418000,"timeTo":1778428800,"timeBec":null,"fcstChange":"FM","probability":null,"wdir":270,"wspd":5,"wgst":null,"wshearHgt":null,"wshearDir":null,"wshearSpd":null,"visib":6,"altim":null,"vertVis":null,"wxString":"BR","notDecoded":null,"clouds":[{"cover":"SCT","base":600,"type":null},{"cover":"SCT","base":25000,"type":null}],"icgTurb":[],"temp":[]},{"timeFrom":1778428800,"timeTo":1778439600,"timeBec":null,"fcstChange":"FM","probability":null,"wdir":260,"wspd":8,"wgst":null,"wshearHgt":null,"wshearDir":null,"wshearSpd":null,"visib":"6+","altim":null,"vertVis":null,"wxString":null,"notDecoded":null,"clouds":[{"cover":"FEW","base":5000,"type":null},{"cover":"SCT","base":25000,"type":null}],"icgTurb":[],"temp":[]},{"timeFrom":1778439600,"timeTo":1778457600,"timeBec":null,"fcstChange":"FM","probability":null,"wdir":260,"wspd":10,"wgst":null,"wshearHgt":null,"wshearDir":null,"wshearSpd":null,"visib":"6+","altim":null,"vertVis":null,"wxString":null,"notDecoded":null,"clouds":[{"cover":"SCT","base":5000,"type":null},{"cover":"BKN","base":10000,"type":null}],"icgTurb":[],"temp":[]},{"timeFrom":1778443200,"timeTo":1778457600,"timeBec":null,"fcstChange":"PROB","probability":30,"wdir":null,"wspd":null,"wgst":null,"wshearHgt":null,"wshearDir":null,"wshearSpd":null,"visib":"","altim":null,"vertVis":null,"wxString":"-SHRA","notDecoded":null,"clouds":[{"cover":"BKN","base":5000,"type":null}],"icgTurb":[],"temp":[]}]},{"icaoId":"KJFK","dbPopTime":"2026-05-09T20:42:57.734Z","bulletinTime":"2026-05-09T20:42:00.000Z","issueTime":"2026-05-09T20:42:00.000Z","validTimeFrom":1778360400,"validTimeTo":1778457600,"rawTAF":"TAF KJFK 092042Z 0921/1024 19012KT 6SM -SHRA BR SCT020 OVC035 TEMPO 0921/0923 3SM SHRA BKN020 OVC035 FM092300 17009KT 6SM BR FEW008 BKN025 FM100200 16006KT 3SM BR BKN008 OVC015 TEMPO 1002/1006 2SM BR OVC004 FM100600 VRB03KT 2SM BR OVC004 TEMPO 1007/1011 1/2SM FG VV002 FM101300 25005KT 6SM BR SCT004 SCT250 FM101500 23008KT P6SM FEW050 SCT250 FM101900 21011KT P6SM SCT050 BKN100 PROB30 1020/1024 -SHRA BKN050","mostRecent":1,"remarks":" AMD","lat":40.63916,"lon":-73.76394,"elev":3,"prior":0,"name":"New York/JF Kennedy Intl","fcsts":[{"timeFrom":1778360400,"timeTo":1778367600,"timeBec":null,"fcstChange":null,"probability":null,"wdir":190,"wspd":12,"wgst":null,"wshearHgt":null,"wshearDir":null,"wshearSpd":null,"visib":6,"altim":null,"vertVis":null,"wxString":"-SHRA BR","notDecoded":null,"clouds":[{"cover":"SCT","base":2000,"type":null},{"cover":"OVC","base":3500,"type":null}],"icgTurb":[],"temp":[]},{"timeFrom":1778360400,"timeTo":1778367600,"timeBec":null,"fcstChange":"TEMPO","probability":null,"wdir":null,"wspd":null,"wgst":null,"wshearHgt":null,"wshearDir":null,"wshearSpd":null,"visib":3,"altim":null,"vertVis":null,"wxString":"SHRA","notDecoded":null,"clouds":[{"cover":"BKN","base":2000,"type":null},{"cover":"OVC","base":3500,"type":null}],"icgTurb":[],"temp":[]},{"timeFrom":1778367600,"timeTo":1778378400,"timeBec":null,"fcstChange":"FM","probability":null,"wdir":170,"wspd":9,"wgst":null,"wshearHgt":null,"wshearDir":null,"wshearSpd":null,"visib":6,"altim":null,"vertVis":null,"wxString":"BR","notDecoded":null,"clouds":[{"cover":"FEW","base":800,"type":null},{"cover":"BKN","base":2500,"type":null}],"icgTurb":[],"temp":[]},{"timeFrom":1778378400,"timeTo":1778392800,"timeBec":null,"fcstChange":"FM","probability":null,"wdir":160,"wspd":6,"wgst":null,"wshearHgt":null,"wshearDir":null,"wshearSpd":null,"visib":3,"altim":null,"vertVis":null,"wxString":"BR","notDecoded":null,"clouds":[{"cover":"BKN","base":800,"type":null},{"cover":"OVC","base":1500,"type":null}],"icgTurb":[],"temp":[]},{"timeFrom":1778378400,"timeTo":1778392800,"timeBec":null,"fcstChange":"TEMPO","probability":null,"wdir":null,"wspd":null,"wgst":null,"wshearHgt":null,"wshearDir":null,"wshearSpd":null,"visib":2,"altim":null,"vertVis":null,"wxString":"BR","notDecoded":null,"clouds":[{"cover":"OVC","base":400,"type":null}],"icgTurb":[],"temp":[]},{"timeFrom":1778392800,"timeTo":1778418000,"timeBec":null,"fcstChange":"FM","probability":null,"wdir":"VRB","wspd":3,"wgst":null,"wshearHgt":null,"wshearDir":null,"wshearSpd":null,"visib":2,"altim":null,"vertVis":null,"wxString":"BR","notDecoded":null,"clouds":[{"cover":"OVC","base":400,"type":null}],"icgTurb":[],"temp":[]},{"timeFrom":1778396400,"timeTo":1778410800,"timeBec":null,"fcstChange":"TEMPO","probability":null,"wdir":null,"wspd":null,"wgst":null,"wshearHgt":null,"wshearDir":null,"wshearSpd":null,"visib":0.5,"altim":null,"vertVis":200,"wxString":"FG","notDecoded":null,"clouds":[{"cover":"OVX","base":null,"type":null}],"icgTurb":[],"temp":[]},{"timeFrom":1778418000,"timeTo":1778425200,"timeBec":null,"fcstChange":"FM","probability":null,"wdir":250,"wspd":5,"wgst":null,"wshearHgt":null,"wshearDir":null,"wshearSpd":null,"visib":6,"altim":null,"vertVis":null,"wxString":"BR","notDecoded":null,"clouds":[{"cover":"SCT","base":400,"type":null},{"cover":"SCT","base":25000,"type":null}],"icgTurb":[],"temp":[]},{"timeFrom":1778425200,"timeTo":1778439600,"timeBec":null,"fcstChange":"FM","probability":null,"wdir":230,"wspd":8,"wgst":null,"wshearHgt":null,"wshearDir":null,"wshearSpd":null,"visib":"6+","altim":null,"vertVis":null,"wxString":null,"notDecoded":null,"clouds":[{"cover":"FEW","base":5000,"type":null},{"cover":"SCT","base":25000,"type":null}],"icgTurb":[],"temp":[]},{"timeFrom":1778439600,"timeTo":1778457600,"timeBec":null,"fcstChange":"FM","probability":null,"wdir":210,"wspd":11,"wgst":null,"wshearHgt":null,"wshearDir":null,"wshearSpd":null,"visib":"6+","altim":null,"vertVis":null,"wxString":null,"notDecoded":null,"clouds":[{"cover":"SCT","base":5000,"type":null},{"cover":"BKN","base":10000,"type":null}],"icgTurb":[],"temp":[]},{"timeFrom":1778443200,"timeTo":1778457600,"timeBec":null,"fcstChange":"PROB","probability":30,"wdir":null,"wspd":null,"wgst":null,"wshearHgt":null,"wshearDir":null,"wshearSpd":null,"visib":"","altim":null,"vertVis":null,"wxString":"-SHRA","notDecoded":null,"clouds":[{"cover":"BKN","base":5000,"type":null}],"icgTurb":[],"temp":[]}]},{"icaoId":"KLGA","dbPopTime":"2026-05-09T20:41:19.115Z","bulletinTime":"2026-05-09T20:41:00.000Z","issueTime":"2026-05-09T20:41:00.000Z","validTimeFrom":1778360400,"validTimeTo":1778457600,"rawTAF":"TAF KLGA 092041Z 0921/1024 VRB05KT 6SM -SHRA BR SCT020 OVC035 TEMPO 0921/0923 3SM RA BR BKN020 OVC035 FM092300 14005KT 6SM BR FEW008 BKN025 FM100200 16005KT 5SM BR FEW004 BKN007 TEMPO 1003/1007 2SM BR OVC004 FM100700 VRB03KT 3SM BR OVC005 TEMPO 1007/1011 1SM BR OVC004 FM101300 28005KT 6SM BR SCT004 SCT250 FM101500 27008KT P6SM FEW050 SCT250 FM101900 24010KT P6SM SCT050 BKN100 PROB30 1020/1024 -SHRA BKN050","mostRecent":1,"remarks":" AMD","lat":40.77945,"lon":-73.88027,"elev":9,"prior":6,"name":"New York/La Guardia Arpt","fcsts":[{"timeFrom":1778360400,"timeTo":1778367600,"timeBec":null,"fcstChange":null,"probability":null,"wdir":"VRB","wspd":5,"wgst":null,"wshearHgt":null,"wshearDir":null,"wshearSpd":null,"visib":6,"altim":null,"vertVis":null,"wxString":"-SHRA BR","notDecoded":null,"clouds":[{"cover":"SCT","base":2000,"type":null},{"cover":"OVC","base":3500,"type":null}],"icgTurb":[],"temp":[]},{"timeFrom":1778360400,"timeTo":1778367600,"timeBec":null,"fcstChange":"TEMPO","probability":null,"wdir":null,"wspd":null,"wgst":null,"wshearHgt":null,"wshearDir":null,"wshearSpd":null,"visib":3,"altim":null,"vertVis":null,"wxString":"RA BR","notDecoded":null,"clouds":[{"cover":"BKN","base":2000,"type":null},{"cover":"OVC","base":3500,"type":null}],"icgTurb":[],"temp":[]},{"timeFrom":1778367600,"timeTo":1778378400,"timeBec":null,"fcstChange":"FM","probability":null,"wdir":140,"wspd":5,"wgst":null,"wshearHgt":null,"wshearDir":null,"wshearSpd":null,"visib":6,"altim":null,"vertVis":null,"wxString":"BR","notDecoded":null,"clouds":[{"cover":"FEW","base":800,"type":null},{"cover":"BKN","base":2500,"type":null}],"icgTurb":[],"temp":[]},{"timeFrom":1778378400,"timeTo":1778396400,"timeBec":null,"fcstChange":"FM","probability":null,"wdir":160,"wspd":5,"wgst":null,"wshearHgt":null,"wshearDir":null,"wshearSpd":null,"visib":5,"altim":null,"vertVis":null,"wxString":"BR","notDecoded":null,"clouds":[{"cover":"FEW","base":400,"type":null},{"cover":"BKN","base":700,"type":null}],"icgTurb":[],"temp":[]},{"timeFrom":1778382000,"timeTo":1778396400,"timeBec":null,"fcstChange":"TEMPO","probability":null,"wdir":null,"wspd":null,"wgst":null,"wshearHgt":null,"wshearDir":null,"wshearSpd":null,"visib":2,"altim":null,"vertVis":null,"wxString":"BR","notDecoded":null,"clouds":[{"cover":"OVC","base":400,"type":null}],"icgTurb":[],"temp":[]},{"timeFrom":1778396400,"timeTo":1778418000,"timeBec":null,"fcstChange":"FM","probability":null,"wdir":"VRB","wspd":3,"wgst":null,"wshearHgt":null,"wshearDir":null,"wshearSpd":null,"visib":3,"altim":null,"vertVis":null,"wxString":"BR","notDecoded":null,"clouds":[{"cover":"OVC","base":500,"type":null}],"icgTurb":[],"temp":[]},{"timeFrom":1778396400,"timeTo":1778410800,"timeBec":null,"fcstChange":"TEMPO","probability":null,"wdir":null,"wspd":null,"wgst":null,"wshearHgt":null,"wshearDir":null,"wshearSpd":null,"visib":1,"altim":null,"vertVis":null,"wxString":"BR","notDecoded":null,"clouds":[{"cover":"OVC","base":400,"type":null}],"icgTurb":[],"temp":[]},{"timeFrom":1778418000,"timeTo":1778425200,"timeBec":null,"fcstChange":"FM","probability":null,"wdir":280,"wspd":5,"wgst":null,"wshearHgt":null,"wshearDir":null,"wshearSpd":null,"visib":6,"altim":null,"vertVis":null,"wxString":"BR","notDecoded":null,"clouds":[{"cover":"SCT","base":400,"type":null},{"cover":"SCT","base":25000,"type":null}],"icgTurb":[],"temp":[]},{"timeFrom":1778425200,"timeTo":1778439600,"timeBec":null,"fcstChange":"FM","probability":null,"wdir":270,"wspd":8,"wgst":null,"wshearHgt":null,"wshearDir":null,"wshearSpd":null,"visib":"6+","altim":null,"vertVis":null,"wxString":null,"notDecoded":null,"clouds":[{"cover":"FEW","base":5000,"type":null},{"cover":"SCT","base":25000,"type":null}],"icgTurb":[],"temp":[]},{"timeFrom":1778439600,"timeTo":1778457600,"timeBec":null,"fcstChange":"FM","probability":null,"wdir":240,"wspd":10,"wgst":null,"wshearHgt":null,"wshearDir":null,"wshearSpd":null,"visib":"6+","altim":null,"vertVis":null,"wxString":null,"notDecoded":null,"clouds":[{"cover":"SCT","base":5000,"type":null},{"cover":"BKN","base":10000,"type":null}],"icgTurb":[],"temp":[]},{"timeFrom":1778443200,"timeTo":1778457600,"timeBec":null,"fcstChange":"PROB","probability":30,"wdir":null,"wspd":null,"wgst":null,"wshearHgt":null,"wshearDir":null,"wshearSpd":null,"visib":"","altim":null,"vertVis":null,"wxString":"-SHRA","notDecoded":null,"clouds":[{"cover":"BKN","base":5000,"type":null}],"icgTurb":[],"temp":[]}]},{"icaoId":"KSWF","dbPopTime":"2026-05-09T19:31:24.749Z","bulletinTime":"2026-05-09T19:31:00.000Z","issueTime":"2026-05-09T19:31:00.000Z","validTimeFrom":1778356800,"validTimeTo":1778457600,"rawTAF":"TAF KSWF 091931Z 0920/1024 27008KT 5SM BR SCT007 OVC035 TEMPO 0920/0922 3SM BR BKN007 FM092200 23006KT 4SM -SHRA BR SCT007 OVC020 FM100200 VRB05KT 6SM BR BKN020 FM100600 VRB03KT 4SM BR OVC015 FM101300 26006KT P6SM FEW050 BKN250 FM101700 29011KT P6SM BKN050 PROB30 1019/1023 5SM -SHRA BKN040 AMD NOT SKED","mostRecent":1,"remarks":" AMD","lat":41.50447,"lon":-74.09988,"elev":139,"prior":6,"name":"Newburgh/Stewart Intl","fcsts":[{"timeFrom":1778356800,"timeTo":1778364000,"timeBec":null,"fcstChange":null,"probability":null,"wdir":270,"wspd":8,"wgst":null,"wshearHgt":null,"wshearDir":null,"wshearSpd":null,"visib":5,"altim":null,"vertVis":null,"wxString":"BR","notDecoded":null,"clouds":[{"cover":"SCT","base":700,"type":null},{"cover":"OVC","base":3500,"type":null}],"icgTurb":[],"temp":[]},{"timeFrom":1778356800,"timeTo":1778364000,"timeBec":null,"fcstChange":"TEMPO","probability":null,"wdir":null,"wspd":null,"wgst":null,"wshearHgt":null,"wshearDir":null,"wshearSpd":null,"visib":3,"altim":null,"vertVis":null,"wxString":"BR","notDecoded":null,"clouds":[{"cover":"BKN","base":700,"type":null}],"icgTurb":[],"temp":[]},{"timeFrom":1778364000,"timeTo":1778378400,"timeBec":null,"fcstChange":"FM","probability":null,"wdir":230,"wspd":6,"wgst":null,"wshearHgt":null,"wshearDir":null,"wshearSpd":null,"visib":4,"altim":null,"vertVis":null,"wxString":"-SHRA BR","notDecoded":null,"clouds":[{"cover":"SCT","base":700,"type":null},{"cover":"OVC","base":2000,"type":null}],"icgTurb":[],"temp":[]},{"timeFrom":1778378400,"timeTo":1778392800,"timeBec":null,"fcstChange":"FM","probability":null,"wdir":"VRB","wspd":5,"wgst":null,"wshearHgt":null,"wshearDir":null,"wshearSpd":null,"visib":6,"altim":null,"vertVis":null,"wxString":"BR","notDecoded":null,"clouds":[{"cover":"BKN","base":2000,"type":null}],"icgTurb":[],"temp":[]},{"timeFrom":1778392800,"timeTo":1778418000,"timeBec":null,"fcstChange":"FM","probability":null,"wdir":"VRB","wspd":3,"wgst":null,"wshearHgt":null,"wshearDir":null,"wshearSpd":null,"visib":4,"altim":null,"vertVis":null,"wxString":"BR","notDecoded":null,"clouds":[{"cover":"OVC","base":1500,"type":null}],"icgTurb":[],"temp":[]},{"timeFrom":1778418000,"timeTo":1778432400,"timeBec":null,"fcstChange":"FM","probability":null,"wdir":260,"wspd":6,"wgst":null,"wshearHgt":null,"wshearDir":null,"wshearSpd":null,"visib":"6+","altim":null,"vertVis":null,"wxString":null,"notDecoded":null,"clouds":[{"cover":"FEW","base":5000,"type":null},{"cover":"BKN","base":25000,"type":null}],"icgTurb":[],"temp":[]},{"timeFrom":1778432400,"timeTo":1778457600,"timeBec":null,"fcstChange":"FM","probability":null,"wdir":290,"wspd":11,"wgst":null,"wshearHgt":null,"wshearDir":null,"wshearSpd":null,"visib":"6+","altim":null,"vertVis":null,"wxString":null,"notDecoded":null,"clouds":[{"cover":"BKN","base":5000,"type":null}],"icgTurb":[],"temp":[]},{"timeFrom":1778439600,"timeTo":1778454000,"timeBec":null,"fcstChange":"PROB","probability":30,"wdir":null,"wspd":null,"wgst":null,"wshearHgt":null,"wshearDir":null,"wshearSpd":null,"visib":5,"altim":null,"vertVis":null,"wxString":"-SHRA","notDecoded":null,"clouds":[{"cover":"BKN","base":4000,"type":null}],"icgTurb":[],"temp":[]}]}]
+\ No newline at end of file
+diff --git a/packages/e2e/fixtures/upstream/refresh.sh b/packages/e2e/fixtures/upstream/refresh.sh
+index f4a90c4..97b76d8 100644
+--- a/packages/e2e/fixtures/upstream/refresh.sh
++++ b/packages/e2e/fixtures/upstream/refresh.sh
+@@ -8,6 +8,7 @@ cd "$(dirname "$0")"
+ MTA="https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds"
+ ADSB="https://api.adsb.lol/v2/lat/40.75/lon/-73.97/dist/40"
+ AWX_METAR="https://aviationweather.gov/api/data/metar?ids=KJFK,KLGA,KEWR,KHPN,KISP,KTEB,KSWF,KFRG,KFOK,KCDW,KMMU&format=json"
++AWX_TAF="https://aviationweather.gov/api/data/taf?ids=KJFK,KLGA,KEWR,KHPN,KISP,KTEB,KSWF,KFRG,KFOK,KCDW,KMMU&format=json"
+ TIMEOUT=15
+ 
+ # Track each background PID so we can wait on them individually and fail
+@@ -25,6 +26,7 @@ curl -sf -o mta-gtfs-si.pb     "$MTA/nyct%2Fgtfs-si"     --max-time "$TIMEOUT" &
+ curl -sf -o mta-gtfs-lirr.pb   "$MTA/lirr%2Fgtfs-lirr"   --max-time "$TIMEOUT" & pids+=($!)
+ curl -sf -o adsb-aircraft.json "$ADSB"                   --max-time "$TIMEOUT" & pids+=($!)
+ curl -sf -o aviationweather-metar.json "$AWX_METAR"      --max-time "$TIMEOUT" & pids+=($!)
++curl -sf -o aviationweather-taf.json   "$AWX_TAF"        --max-time "$TIMEOUT" & pids+=($!)
+ 
+ failed=0
+ for pid in "${pids[@]}"; do
+diff --git a/packages/server/src/index.ts b/packages/server/src/index.ts
+index e984734..8e1a87d 100644
+--- a/packages/server/src/index.ts
++++ b/packages/server/src/index.ts
+@@ -9,6 +9,7 @@ import { loadStaticGtfs } from "./services/gtfs-loader.js";
+ import { startPolling } from "./services/mta-poller.js";
+ import { startAirspacePolling } from "./services/airspace-poller.js";
+ import { startMetarPolling } from "./services/metar-poller.js";
++import { startTafPolling } from "./services/taf-poller.js";
+ import { prewarmInterpolator } from "./services/position-interpolator.js";
+ import { createTrainsRouter } from "./routes/trains.js";
+ import { createStaticRouter } from "./routes/static.js";
+@@ -28,6 +29,18 @@ const AIRSPACE_POLL_INTERVAL = parseInt(process.env.AIRSPACE_POLL_INTERVAL_MS ??
+ // METARs only update hourly so polling faster wastes upstream cycles.
+ // 15 minutes catches special reports (SPECI) without thrashing.
+ const METAR_POLL_INTERVAL = parseInt(process.env.METAR_POLL_INTERVAL_MS ?? "900000", 10);
++// TAFs issue every 6h with mid-cycle amendments. 30 minutes catches
++// amendments inside one polling window without putting needless load
++// on the upstream — TAFs change far less frequently than METARs.
++//
++// Validate aggressively here: a typo'd env var (parseInt → NaN, or a
++// stray "0") would degenerate setInterval into near-immediate polling
++// and hammer the upstream. Reject anything below a 1-minute floor.
++const TAF_POLL_INTERVAL_RAW = Number(process.env.TAF_POLL_INTERVAL_MS ?? "1800000");
++const TAF_POLL_INTERVAL =
++  Number.isFinite(TAF_POLL_INTERVAL_RAW) && TAF_POLL_INTERVAL_RAW >= 60_000
++    ? TAF_POLL_INTERVAL_RAW
++    : 1_800_000;
+ 
+ const app = new Hono();
+ 
+@@ -120,10 +133,11 @@ try {
+ 
+ if (AIRSPACE_ENABLED) {
+   startAirspacePolling(AIRSPACE_POLL_INTERVAL);
+-  // METAR shares the airspace gate — same upstream-availability concerns
+-  // apply (sealed CI, offline dev) and the popup row is only useful on
+-  // the airspace tab anyway.
++  // METAR + TAF share the airspace gate — same upstream-availability
++  // concerns apply (sealed CI, offline dev) and the popup rows are only
++  // useful on the airspace tab anyway.
+   startMetarPolling(METAR_POLL_INTERVAL);
++  startTafPolling(TAF_POLL_INTERVAL);
+ } else {
+   console.log("Airspace polling disabled via AIRSPACE_ENABLED=false");
+ }
+diff --git a/packages/server/src/routes/airspace.ts b/packages/server/src/routes/airspace.ts
+index 635429a..a71270c 100644
+--- a/packages/server/src/routes/airspace.ts
++++ b/packages/server/src/routes/airspace.ts
+@@ -1,7 +1,8 @@
+ import { Hono } from "hono";
+-import type { AirspaceResponse, MetarsResponse } from "@panoptrain/shared";
++import type { AirspaceResponse, MetarsResponse, TafsResponse } from "@panoptrain/shared";
+ import { getCurrentAirspaceSnapshot } from "../services/airspace-poller.js";
+ import { getCurrentMetarSnapshot } from "../services/metar-poller.js";
++import { getCurrentTafSnapshot } from "../services/taf-poller.js";
+ 
+ const airspace = new Hono();
+ 
+@@ -43,4 +44,19 @@ airspace.get("/metar", (c) => {
+   return c.json(snap satisfies MetarsResponse);
+ });
+ 
++airspace.get("/taf", (c) => {
++  const snap = getCurrentTafSnapshot();
++  if (!snap) {
++    return c.json(
++      { error: "TAF data not available — poller has not produced a snapshot yet" },
++      503,
++    );
++  }
++  // TAFs amend mid-cycle so a 5-minute max-age keeps amendments
++  // visible without thrashing the poller. Longer would be safe given
++  // the 6h base cycle, but the popup is the only consumer.
++  c.header("Cache-Control", "public, max-age=300");
++  return c.json(snap satisfies TafsResponse);
++});
++
+ export default airspace;
+diff --git a/packages/server/src/services/__tests__/taf-poller.test.ts b/packages/server/src/services/__tests__/taf-poller.test.ts
+new file mode 100644
+index 0000000..2a73200
+--- /dev/null
++++ b/packages/server/src/services/__tests__/taf-poller.test.ts
+@@ -0,0 +1,195 @@
++import { describe, it, expect } from "vitest";
++import { parseTafResponse } from "../taf-poller.js";
++
++/**
++ * Pins the parser shape — the rest of the poller (fetch, cache, retry,
++ * polling cadence) is structural and mirrors the METAR poller. The
++ * value here is in the parser handling all the upstream's edge cases
++ * cleanly, since TAF records carry more shape variation than METAR
++ * (overlay groups omit fields, visibility ships as "P6SM" or
++ * fractional strings, fcstChange variants).
++ */
++
++const NOW = 1_780_000_000_000;
++
++function makeRecord(overrides: Record<string, unknown> = {}): Record<string, unknown> {
++  return {
++    icaoId: "KJFK",
++    issueTime: "2026-05-09T22:00:00.000Z",
++    validTimeFrom: 1_778_400_000,
++    validTimeTo: 1_778_500_000,
++    rawTAF: "TAF KJFK ...",
++    fcsts: [],
++    ...overrides,
++  };
++}
++
++describe("parseTafResponse — record-level", () => {
++  it("keys reports by ICAO and converts unix-second times to ms", () => {
++    const out = parseTafResponse([makeRecord()], NOW);
++    expect(out.reports.KJFK).toBeDefined();
++    expect(out.reports.KJFK.validFrom).toBe(1_778_400_000_000);
++    expect(out.reports.KJFK.validTo).toBe(1_778_500_000_000);
++    expect(out.reports.KJFK.issuedAt).toBe(Date.parse("2026-05-09T22:00:00.000Z"));
++  });
++
++  it("drops records missing required fields", () => {
++    const out = parseTafResponse([
++      makeRecord({ icaoId: undefined }),
++      makeRecord({ icaoId: "KLGA", issueTime: undefined }),
++      makeRecord({ icaoId: "KEWR", validTimeFrom: undefined }),
++      makeRecord({ icaoId: "KHPN" }),
++    ], NOW);
++    expect(Object.keys(out.reports)).toEqual(["KHPN"]);
++  });
++
++  it("sets sourceTimestamp to the latest issueTime across reports", () => {
++    const earlier = "2026-05-09T18:00:00.000Z";
++    const later = "2026-05-09T22:00:00.000Z";
++    const out = parseTafResponse([
++      makeRecord({ icaoId: "KJFK", issueTime: earlier }),
++      makeRecord({ icaoId: "KLGA", issueTime: later }),
++    ], NOW);
++    expect(out.sourceTimestamp).toBe(Date.parse(later));
++  });
++
++  it("falls back sourceTimestamp to `now` when no records parsed", () => {
++    const out = parseTafResponse([], NOW);
++    expect(out.sourceTimestamp).toBe(NOW);
++    expect(Object.keys(out.reports)).toEqual([]);
++  });
++});
++
++describe("parseTafResponse — forecast group parsing", () => {
++  it("parses a base FM group with full conditions", () => {
++    const out = parseTafResponse([makeRecord({
++      fcsts: [{
++        timeFrom: 1_778_400_000,
++        timeTo: 1_778_410_800,
++        fcstChange: "FM",
++        wdir: 270,
++        wspd: 15,
++        wgst: 22,
++        visib: 6,
++        wxString: "-SHRA BR",
++        clouds: [{ cover: "BKN", base: 3000 }],
++      }],
++    })], NOW);
++    const f = out.reports.KJFK.forecasts[0];
++    expect(f.fcstChange).toBe("FM");
++    expect(f.wind).toEqual({ directionDeg: 270, speedKt: 15, gustKt: 22 });
++    expect(f.visibilitySm).toBe(6);
++    expect(f.ceilingFt).toBe(3000);
++    expect(f.wxString).toBe("-SHRA BR");
++  });
++
++  it("treats null fcstChange as the base period", () => {
++    const out = parseTafResponse([makeRecord({
++      fcsts: [{ timeFrom: 1_778_400_000, timeTo: 1_778_500_000, fcstChange: null, wdir: 180, wspd: 10 }],
++    })], NOW);
++    expect(out.reports.KJFK.forecasts[0].fcstChange).toBeNull();
++  });
++
++  it("normalizes PROB30 / PROB40 variants to the PROB sentinel", () => {
++    const out = parseTafResponse([makeRecord({
++      fcsts: [{ timeFrom: 1_778_400_000, timeTo: 1_778_410_000, fcstChange: "PROB30", probability: 30 }],
++    })], NOW);
++    expect(out.reports.KJFK.forecasts[0].fcstChange).toBe("PROB");
++    expect(out.reports.KJFK.forecasts[0].probability).toBe(30);
++  });
++
++  it("nulls wind when neither speed nor direction present (TEMPO/BECMG inheriting from base)", () => {
++    const out = parseTafResponse([makeRecord({
++      fcsts: [{ timeFrom: 1_778_400_000, timeTo: 1_778_410_000, fcstChange: "TEMPO", visib: 3, wxString: "SHRA" }],
++    })], NOW);
++    expect(out.reports.KJFK.forecasts[0].wind).toBeNull();
++  });
++
++  it("treats VRB direction as null", () => {
++    const out = parseTafResponse([makeRecord({
++      fcsts: [{ timeFrom: 1_778_400_000, timeTo: 1_778_410_000, fcstChange: "FM", wdir: "VRB", wspd: 3 }],
++    })], NOW);
++    expect(out.reports.KJFK.forecasts[0].wind).toEqual({ directionDeg: null, speedKt: 3, gustKt: null });
++  });
++
++  it("converts P6SM and 6+ to numeric 6", () => {
++    const out = parseTafResponse([makeRecord({
++      fcsts: [
++        { timeFrom: 1_778_400_000, timeTo: 1_778_410_000, fcstChange: "FM", visib: "P6SM" },
++        { timeFrom: 1_778_410_000, timeTo: 1_778_420_000, fcstChange: "FM", visib: "6+" },
++      ],
++    })], NOW);
++    expect(out.reports.KJFK.forecasts[0].visibilitySm).toBe(6);
++    expect(out.reports.KJFK.forecasts[1].visibilitySm).toBe(6);
++  });
++
++  it("parses fractional visibility (1/2 sm fog)", () => {
++    const out = parseTafResponse([makeRecord({
++      fcsts: [{ timeFrom: 1_778_400_000, timeTo: 1_778_410_000, fcstChange: "FM", visib: "1/2" }],
++    })], NOW);
++    expect(out.reports.KJFK.forecasts[0].visibilitySm).toBe(0.5);
++  });
++
++  it("derives ceiling from lowest BKN/OVC/VV layer (ignores FEW/SCT)", () => {
++    const out = parseTafResponse([makeRecord({
++      fcsts: [{
++        timeFrom: 1_778_400_000, timeTo: 1_778_410_000, fcstChange: "FM",
++        clouds: [
++          { cover: "FEW", base: 500 },
++          { cover: "SCT", base: 1500 },
++          { cover: "BKN", base: 3000 },
++          { cover: "OVC", base: 5000 },
++        ],
++      }],
++    })], NOW);
++    expect(out.reports.KJFK.forecasts[0].ceilingFt).toBe(3000);
++  });
++
++  it("picks the lowest qualifying layer regardless of array order", () => {
++    // Defensive — the upstream typically sorts by altitude ascending,
++    // but the API doesn't document that contract. Out-of-order layers
++    // must still produce the correct (lowest) ceiling.
++    const out = parseTafResponse([makeRecord({
++      fcsts: [{
++        timeFrom: 1_778_400_000, timeTo: 1_778_410_000, fcstChange: "FM",
++        clouds: [
++          { cover: "OVC", base: 8000 },
++          { cover: "BKN", base: 2500 },
++        ],
++      }],
++    })], NOW);
++    expect(out.reports.KJFK.forecasts[0].ceilingFt).toBe(2500);
++  });
++
++  it("returns null ceiling when only FEW/SCT layers are present", () => {
++    const out = parseTafResponse([makeRecord({
++      fcsts: [{
++        timeFrom: 1_778_400_000, timeTo: 1_778_410_000, fcstChange: "FM",
++        clouds: [{ cover: "FEW", base: 5000 }, { cover: "SCT", base: 8000 }],
++      }],
++    })], NOW);
++    expect(out.reports.KJFK.forecasts[0].ceilingFt).toBeNull();
++  });
++
++  it("trims and normalizes empty wxString to null", () => {
++    const out = parseTafResponse([makeRecord({
++      fcsts: [
++        { timeFrom: 1_778_400_000, timeTo: 1_778_410_000, fcstChange: "FM", wxString: "  " },
++        { timeFrom: 1_778_410_000, timeTo: 1_778_420_000, fcstChange: "FM", wxString: "  -SHRA  " },
++      ],
++    })], NOW);
++    expect(out.reports.KJFK.forecasts[0].wxString).toBeNull();
++    expect(out.reports.KJFK.forecasts[1].wxString).toBe("-SHRA");
++  });
++
++  it("drops forecast groups missing timeFrom/timeTo", () => {
++    const out = parseTafResponse([makeRecord({
++      fcsts: [
++        { fcstChange: "FM", wdir: 270, wspd: 10 },
++        { timeFrom: 1_778_400_000, timeTo: 1_778_410_000, fcstChange: "FM", wdir: 180, wspd: 5 },
++      ],
++    })], NOW);
++    expect(out.reports.KJFK.forecasts).toHaveLength(1);
++    expect(out.reports.KJFK.forecasts[0].wind?.directionDeg).toBe(180);
++  });
++});
+diff --git a/packages/server/src/services/taf-poller.ts b/packages/server/src/services/taf-poller.ts
+new file mode 100644
+index 0000000..16d811c
+--- /dev/null
++++ b/packages/server/src/services/taf-poller.ts
+@@ -0,0 +1,242 @@
++import type { TafPeriod, TafReport, TafsResponse } from "@panoptrain/shared";
++import { AIRPORTS } from "@panoptrain/shared";
++
++/**
++ * TAF poller — terminal aerodrome forecasts from aviationweather.gov
++ * for each airport in the AIRPORTS list. The popup surfaces the issue
++ * time, validity window, current forecast period, and full raw text.
++ *
++ * TAFs issue every 6 hours (00, 06, 12, 18 UTC) and are valid for 24-30
++ * hours. Amendments fire mid-cycle when conditions deviate from the
++ * forecast. Polling every 30 minutes catches amendments within a
++ * useful window without thrashing the upstream — TAFs change far less
++ * frequently than METARs.
++ *
++ * aviationweather.gov etiquette mirrors the METAR poller: identifiable
++ * User-Agent, JSON format only.
++ */
++const AVIATIONWEATHER_BASE = "https://aviationweather.gov/api/data/taf";
++const USER_AGENT = "panoptrain/0.1.0 (contact: cjunks94@gmail.com)";
++const FETCH_TIMEOUT_MS = 10_000;
++const RETRY_DELAYS_MS = [0, 1_000, 3_000];
++/** Eight hours — TAFs are valid 24-30h, but the cache fallback only
++ *  needs to bridge a transient upstream outage during the user's active
++ *  session. Beyond ~8h the forecast itself starts to feel stale even
++ *  if it's still technically within validity. */
++const CACHE_TTL_MS = 8 * 60 * 60 * 1000;
++
++let interval: ReturnType<typeof setInterval> | undefined;
++let snapshot: TafsResponse | null = null;
++let cached: { snapshot: TafsResponse; cachedAt: number } | null = null;
++
++const ALL_ICAO = AIRPORTS.map((a) => a.icao);
++
++/** Raw record shape from aviationweather.gov's /api/data/taf endpoint
++ *  with format=json. We declare only the fields we read. */
++interface AwxTafRecord {
++  icaoId?: string;
++  /** ISO 8601 timestamp string. */
++  issueTime?: string;
++  /** Unix seconds. */
++  validTimeFrom?: number;
++  validTimeTo?: number;
++  rawTAF?: string;
++  fcsts?: AwxTafForecast[];
++}
++
++interface AwxTafForecast {
++  /** Unix seconds. */
++  timeFrom?: number;
++  timeTo?: number;
++  /** "FM" | "TEMPO" | "BECMG" | "PROB" | null */
++  fcstChange?: string | null;
++  probability?: number | null;
++  wdir?: number | string | null;
++  wspd?: number | null;
++  wgst?: number | null;
++  visib?: number | string | null;
++  wxString?: string | null;
++  clouds?: Array<{ cover?: string; base?: number | null }>;
++}
++
++function parseVisibility(visib: AwxTafForecast["visib"]): number | null {
++  if (visib === undefined || visib === null) return null;
++  if (typeof visib === "number") return visib;
++  // "P6SM" surfaces from raw TAF parsing as the numeric "6+" / similar.
++  // The JSON feed sometimes ships strings; handle the common cases.
++  if (visib === "P6SM" || visib === "6+") return 6;
++  const slash = visib.indexOf("/");
++  if (slash > 0) {
++    const num = Number(visib.slice(0, slash));
++    const den = Number(visib.slice(slash + 1));
++    if (Number.isFinite(num) && Number.isFinite(den) && den > 0) return num / den;
++  }
++  const n = Number(visib);
++  return Number.isFinite(n) ? n : null;
++}
++
++function parseDirection(wdir: AwxTafForecast["wdir"]): number | null {
++  if (wdir === undefined || wdir === null) return null;
++  if (typeof wdir === "number") return wdir;
++  // "VRB" and other strings — null is the right "no fixed direction" signal.
++  return null;
++}
++
++function deriveCeiling(clouds: AwxTafForecast["clouds"]): number | null {
++  if (!clouds || clouds.length === 0) return null;
++  // Lowest BKN/OVC/VV layer is the ceiling. Scan all qualifying layers
++  // rather than returning the first match — the upstream typically
++  // sorts by altitude ascending, but the API doesn't document that
++  // contract, and an out-of-order layer would otherwise misreport the
++  // ceiling in the popup summary.
++  let lowest: number | null = null;
++  for (const layer of clouds) {
++    const cover = (layer.cover ?? "").toUpperCase();
++    if ((cover === "BKN" || cover === "OVC" || cover === "VV") && typeof layer.base === "number") {
++      if (lowest === null || layer.base < lowest) lowest = layer.base;
++    }
++  }
++  return lowest;
++}
++
++const VALID_CHANGES = new Set(["FM", "TEMPO", "BECMG", "PROB"]);
++
++function parseChange(c: AwxTafForecast["fcstChange"]): TafPeriod["fcstChange"] {
++  if (!c) return null;
++  const upper = c.toUpperCase();
++  // PROB30/PROB40 surface as "PROB" with a probability number alongside.
++  if (upper.startsWith("PROB")) return "PROB";
++  return VALID_CHANGES.has(upper) ? (upper as TafPeriod["fcstChange"]) : null;
++}
++
++function parseForecast(f: AwxTafForecast): TafPeriod | null {
++  if (typeof f.timeFrom !== "number" || typeof f.timeTo !== "number") return null;
++  const wspdParsed = typeof f.wspd === "number" ? f.wspd : null;
++  const wdirParsed = parseDirection(f.wdir);
++  // Suppress wind block when neither speed nor direction is present —
++  // the upstream omits them on overlay groups (TEMPO/BECMG) that don't
++  // change wind from the base period.
++  const wind = wspdParsed === null && wdirParsed === null
++    ? null
++    : {
++        directionDeg: wdirParsed,
++        speedKt: wspdParsed,
++        gustKt: typeof f.wgst === "number" ? f.wgst : null,
++      };
++  return {
++    timeFrom: f.timeFrom * 1000,
++    timeTo: f.timeTo * 1000,
++    fcstChange: parseChange(f.fcstChange),
++    probability: typeof f.probability === "number" ? f.probability : null,
++    wind,
++    visibilitySm: parseVisibility(f.visib),
++    ceilingFt: deriveCeiling(f.clouds),
++    wxString: f.wxString && f.wxString.trim().length > 0 ? f.wxString.trim() : null,
++  };
++}
++
++function parseRecord(rec: AwxTafRecord): TafReport | null {
++  if (!rec.icaoId || !rec.issueTime || typeof rec.validTimeFrom !== "number" ||
++      typeof rec.validTimeTo !== "number") {
++    return null;
++  }
++  const issuedAtMs = Date.parse(rec.issueTime);
++  if (!Number.isFinite(issuedAtMs)) return null;
++  const forecasts: TafPeriod[] = [];
++  for (const f of rec.fcsts ?? []) {
++    const parsed = parseForecast(f);
++    if (parsed) forecasts.push(parsed);
++  }
++  return {
++    icao: rec.icaoId,
++    issuedAt: issuedAtMs,
++    validFrom: rec.validTimeFrom * 1000,
++    validTo: rec.validTimeTo * 1000,
++    raw: rec.rawTAF ?? "",
++    forecasts,
++  };
++}
++
++export function parseTafResponse(records: AwxTafRecord[], now: number = Date.now()): TafsResponse {
++  const reports: Record<string, TafReport> = {};
++  for (const rec of records) {
++    const parsed = parseRecord(rec);
++    if (parsed) reports[parsed.icao] = parsed;
++  }
++  // Source timestamp = the latest issue time we have. Beats Date.now()
++  // because TAFs publish on the 6h cycle.
++  let latestIssued = 0;
++  for (const r of Object.values(reports)) {
++    if (r.issuedAt > latestIssued) latestIssued = r.issuedAt;
++  }
++  return {
++    timestamp: now,
++    sourceTimestamp: latestIssued || now,
++    reports,
++    source: "live",
++  };
++}
++
++export async function fetchTafSnapshot(): Promise<TafsResponse> {
++  const url = `${AVIATIONWEATHER_BASE}?ids=${ALL_ICAO.join(",")}&format=json`;
++  let lastErr: unknown = null;
++  for (let attempt = 0; attempt < RETRY_DELAYS_MS.length; attempt++) {
++    if (RETRY_DELAYS_MS[attempt] > 0) {
++      await new Promise((r) => setTimeout(r, RETRY_DELAYS_MS[attempt]));
++    }
++    try {
++      const res = await fetch(url, {
++        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
++        headers: { "User-Agent": USER_AGENT, accept: "application/json" },
++      });
++      if (!res.ok) throw new Error(`HTTP ${res.status}`);
++      const records = (await res.json()) as AwxTafRecord[];
++      return parseTafResponse(records);
++    } catch (err) {
++      lastErr = err;
++    }
++  }
++  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
++}
++
++async function pollOnce(): Promise<void> {
++  try {
++    const next = await fetchTafSnapshot();
++    snapshot = next;
++    cached = { snapshot: next, cachedAt: next.timestamp };
++    console.log(`[taf] ok, ${Object.keys(next.reports).length} reports`);
++  } catch (err) {
++    if (cached && Date.now() - cached.cachedAt < CACHE_TTL_MS) {
++      const ageMin = Math.round((Date.now() - cached.cachedAt) / 60_000);
++      console.warn(
++        `[taf] fetch failed (${err}); reusing cached snapshot from ${ageMin}m ago`,
++      );
++      snapshot = { ...cached.snapshot, source: "cached", timestamp: Date.now() };
++    } else {
++      console.warn(`[taf] fetch failed (${err}); no usable cache`);
++      snapshot = null;
++    }
++  }
++}
++
++export function startTafPolling(intervalMs: number): void {
++  stopTafPolling();
++  console.log(`Starting TAF polling every ${intervalMs / 60_000}m...`);
++  pollOnce();
++  interval = setInterval(pollOnce, intervalMs);
++}
++
++export function stopTafPolling(): void {
++  if (interval) clearInterval(interval);
++  interval = undefined;
++}
++
++export function getCurrentTafSnapshot(): TafsResponse | null {
++  return snapshot;
++}
++
++/** Test-only — production code never calls this. */
++export function _resetTafCache(): void {
++  snapshot = null;
++  cached = null;
++}
+diff --git a/packages/server/src/test-mocks.ts b/packages/server/src/test-mocks.ts
+index eb18f44..799ac0d 100644
+--- a/packages/server/src/test-mocks.ts
++++ b/packages/server/src/test-mocks.ts
+@@ -60,6 +60,10 @@ const handlers = [
+   http.get("https://aviationweather.gov/api/data/metar", () =>
+     HttpResponse.json(jsonFixture("aviationweather-metar.json")),
+   ),
++  // TAF endpoint — same shape as METAR, fixture covers all airports.
++  http.get("https://aviationweather.gov/api/data/taf", () =>
++    HttpResponse.json(jsonFixture("aviationweather-taf.json")),
++  ),
+ ];
+ 
+ export const e2eServer = setupServer(...handlers);
+diff --git a/packages/shared/src/index.ts b/packages/shared/src/index.ts
+index 2eb8af2..ad1ec1f 100644
+--- a/packages/shared/src/index.ts
++++ b/packages/shared/src/index.ts
+@@ -47,6 +47,7 @@ export type { Mode } from "./constants/feeds.js";
+ 
+ export type { Aircraft, AirspaceResponse } from "./types/airspace.js";
+ export type { MetarReport, MetarsResponse, FlightCategory } from "./types/metar.js";
++export type { TafReport, TafsResponse, TafPeriod } from "./types/taf.js";
+ export { AIRPORTS } from "./constants/airports.js";
+ export type { Airport, Runway, RunwaySurface, Frequencies } from "./constants/airports.js";
+ 
+diff --git a/packages/shared/src/types/taf.ts b/packages/shared/src/types/taf.ts
+new file mode 100644
+index 0000000..cc94860
+--- /dev/null
++++ b/packages/shared/src/types/taf.ts
+@@ -0,0 +1,79 @@
++/**
++ * TAF (Terminal Aerodrome Forecast) — 24-30h forecast issued every 6h
++ * (or amended ad-hoc) for an airport. Surfaced in the airport popup
++ * alongside METAR so a pilot can see both current conditions and the
++ * forecast window without leaving the map.
++ *
++ * Shape mirrors the parsed structure aviationweather.gov returns, with
++ * the `fcsts` array (forecast periods) preserved structurally so the
++ * client can pick the period covering "now" at render time. Units
++ * normalized for US flight ops (knots, statute miles, feet) — same as
++ * MetarReport.
++ */
++
++/** A single forecast period within a TAF. The TAF is composed of a
++ *  base period (fcstChange === null at index 0, or "FM" for subsequent
++ *  base shifts) plus optional overlays (TEMPO, BECMG, PROB) that modify
++ *  the base during a sub-window.
++ *
++ *  For v1 display, the client picks the most-recent "base" period
++ *  (fcstChange null/FM) covering Date.now() and renders that. TEMPO/
++ *  BECMG overlays are ignored at the summary line — they're still
++ *  visible in the raw TAF if the pilot expands. */
++export interface TafPeriod {
++  /** Period start, epoch ms. */
++  timeFrom: number;
++  /** Period end, epoch ms. */
++  timeTo: number;
++  /** Change indicator. null = base period at the start of the TAF.
++   *  "FM" = base period change at this time. "TEMPO" = temporary
++   *  conditions during the window. "BECMG" = becoming, gradual change.
++   *  "PROB" = probability group (with `probability` set). */
++  fcstChange: "FM" | "TEMPO" | "BECMG" | "PROB" | null;
++  /** Probability percent for PROB groups (typically 30 or 40). */
++  probability: number | null;
++  wind: {
++    /** True heading in degrees, 0–360. Null = variable / calm / not in this group. */
++    directionDeg: number | null;
++    /** Sustained speed in knots. Null when this group inherits wind from
++     *  the base (TEMPO/BECMG groups frequently omit fields they don't change). */
++    speedKt: number | null;
++    /** Gust speed in knots, null if no gusts. */
++    gustKt: number | null;
++  } | null;
++  /** Statute miles. "P6SM" (>6 sm unrestricted) → 6 with the raw text
++   *  carrying the precise wording. Null when this group doesn't change vis. */
++  visibilitySm: number | null;
++  /** Lowest broken/overcast layer in feet AGL, null if none in this group. */
++  ceilingFt: number | null;
++  /** Weather phenomena string like "-SHRA BR" (light rain, mist) or null. */
++  wxString: string | null;
++}
++
++export interface TafReport {
++  /** ICAO code (e.g. "KJFK") — matches AIRPORTS.icao for popup lookup. */
++  icao: string;
++  /** Issue time, epoch ms. */
++  issuedAt: number;
++  /** Validity window start, epoch ms. */
++  validFrom: number;
++  /** Validity window end, epoch ms. */
++  validTo: number;
++  /** Verbatim TAF string. The popup offers an expand-to-raw view because
++   *  pilots are trained to read the original encoding directly. */
++  raw: string;
++  /** Forecast periods in upstream order. Includes both base (FM) and
++   *  overlay (TEMPO/BECMG/PROB) entries. */
++  forecasts: TafPeriod[];
++}
++
++export interface TafsResponse {
++  /** Server timestamp, epoch ms — when this snapshot was assembled. */
++  timestamp: number;
++  /** Last successful upstream fetch time, epoch ms. */
++  sourceTimestamp: number;
++  /** Per-airport reports keyed by ICAO. Missing entry = no current TAF
++   *  (uncommon — most major airports always have a current TAF). */
++  reports: Record<string, TafReport>;
++  source: "live" | "cached";
++}

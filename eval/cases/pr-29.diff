@@ -1,0 +1,363 @@
+diff --git a/.env.example b/.env.example
+index 740a58e..b7fd844 100644
+--- a/.env.example
++++ b/.env.example
+@@ -34,3 +34,10 @@ DEEPSEEK_API_KEY=
+ # blocks overlap; this caps post-completion mashing too. Returns HTTP 429
+ # until the window elapses. The scheduled cron is unaffected.
+ # AGENTIC_PORTFOLIO_RUN_COOLDOWN_SECONDS=1800
++
++# Demo mode — fail-safe default is on (paper trading, banner shown,
++# real-broker selection forbidden). Only "false"/"0"/"no"/"off" disable it;
++# unset, typos, and unexpected values all stay on demo. Off-by-default would
++# be the wrong choice here: a forgotten env var must never silently leak
++# into real-money execution.
++# DEMO_MODE=true
+diff --git a/src/agentic_portfolio/cli.py b/src/agentic_portfolio/cli.py
+index cad085c..798cdb3 100644
+--- a/src/agentic_portfolio/cli.py
++++ b/src/agentic_portfolio/cli.py
+@@ -372,6 +372,7 @@ def serve(
+     data = _resolve_data_dir(data_dir)
+     web_password = os.getenv("WEB_PASSWORD")
+     cron_expr = os.getenv("AGENTIC_PORTFOLIO_CRON", "0 21 * * 5")
++    demo_mode = _parse_demo_mode(os.getenv("DEMO_MODE"))
+ 
+     if web_password is None:
+         console.print(
+@@ -379,16 +380,37 @@ def serve(
+             "Set it via Hush before exposing this service publicly.[/yellow]"
+         )
+ 
++    if not demo_mode:
++        console.print(
++            "[yellow]DEMO_MODE=false — demo safeguards disabled. "
++            "Broker is still paper-only today; a future LiveBroker selection "
++            "will gate on this flag.[/yellow]"
++        )
++    else:
++        console.print("[green]DEMO_MODE on — paper trading only, no real money flows.[/green]")
++
+     web_app = create_app(
+         config_path=config,
+         data_dir=data,
+         web_password=web_password,
+         enable_scheduler=True,
+         cron_expression=cron_expr,
++        demo_mode=demo_mode,
+     )
+     uvicorn.run(web_app, host=host, port=port, log_level="info")
+ 
+ 
++def _parse_demo_mode(raw: str | None) -> bool:
++    """Parse DEMO_MODE env var with a fail-safe default.
++
++    Default (unset) is True — the only way to leave demo is an explicit
++    false-y string. Typos and unexpected values stay on paper.
++    """
++    if raw is None:
++        return True
++    return raw.strip().lower() not in {"false", "0", "no", "off"}
++
++
+ def main() -> None:
+     """Entry point for the `agentic-portfolio` console script."""
+     try:
+diff --git a/src/agentic_portfolio/web/api.py b/src/agentic_portfolio/web/api.py
+index d236b7e..e3ab755 100644
+--- a/src/agentic_portfolio/web/api.py
++++ b/src/agentic_portfolio/web/api.py
+@@ -7,7 +7,7 @@
+ import threading
+ from datetime import date, datetime, timezone
+ from pathlib import Path
+-from typing import Any
++from typing import TYPE_CHECKING, Any
+ 
+ from fastapi import APIRouter, Body, Depends, HTTPException, Request, status
+ from fastapi.responses import PlainTextResponse
+@@ -20,6 +20,9 @@
+ from .auth import require_auth
+ from .runs import RunTracker
+ 
++if TYPE_CHECKING:
++    from ..broker import PaperBroker
++
+ 
+ class RunRequest(BaseModel):
+     """Optional payload on POST /api/run.
+@@ -551,12 +554,7 @@ def _approve(pending: PendingOrder, request: Request) -> dict[str, Any]:
+         return {"status": "failed", "id": pending.id, "reason": reason}
+ 
+     # Drift OK — fire broker.
+-    from ..broker import PaperBroker
+-    from ..portfolio import Portfolio
+-
+-    paths = _data_paths(request)
+-    portfolio = Portfolio.load(paths["portfolio"])
+-    broker = PaperBroker(portfolio, paths["orders"])
++    broker = _make_broker(request)
+ 
+     idempotency_key = f"pending:{pending.id}"
+     try:
+@@ -588,6 +586,24 @@ def _data_paths(request: Request) -> dict[str, Path]:
+     return paths
+ 
+ 
++def _make_broker(request: Request) -> PaperBroker:
++    """Construct the broker for an order placement.
++
++    Today this always returns a PaperBroker. The seam exists so that a
++    future LiveBroker addition has a single, audited point of selection
++    instead of being threaded through every call site. The contract for
++    that future work is: when `app.state.demo_mode` is True (the default
++    and fail-safe), this MUST return a paper broker. A real broker may
++    only be returned when demo_mode is explicitly False.
++    """
++    from ..broker import PaperBroker
++    from ..portfolio import Portfolio
++
++    paths = _data_paths(request)
++    portfolio = Portfolio.load(paths["portfolio"])
++    return PaperBroker(portfolio, paths["orders"])
++
++
+ def _run_cooldown_seconds() -> float:
+     """Read AGENTIC_PORTFOLIO_RUN_COOLDOWN_SECONDS, default 0 (off).
+ 
+diff --git a/src/agentic_portfolio/web/app.py b/src/agentic_portfolio/web/app.py
+index 597dc25..6d89b08 100644
+--- a/src/agentic_portfolio/web/app.py
++++ b/src/agentic_portfolio/web/app.py
+@@ -7,6 +7,7 @@
+ 
+ from __future__ import annotations
+ 
++import logging
+ from pathlib import Path
+ 
+ from fastapi import FastAPI
+@@ -20,6 +21,8 @@
+ 
+ _STATIC_DIR = Path(__file__).parent / "static"
+ 
++logger = logging.getLogger(__name__)
++
+ 
+ def create_app(
+     *,
+@@ -28,12 +31,17 @@ def create_app(
+     web_password: str | None,
+     enable_scheduler: bool = False,
+     cron_expression: str = "0 21 * * 5",
++    demo_mode: bool = True,
+ ) -> FastAPI:
+     """Build the FastAPI app.
+ 
+     `enable_scheduler=False` (default) skips the APScheduler lifespan so
+     tests don't spin up real background threads. `cron_expression` is
+     honored only when `enable_scheduler=True`.
++
++    `demo_mode` defaults to True (fail-safe): real trade execution must
++    be opted into explicitly. The flag is plumbed to `app.state.demo_mode`
++    where the broker factory and template renderers consult it.
+     """
+     lifespan = None
+     if enable_scheduler:
+@@ -57,7 +65,15 @@ def create_app(
+     app.state.data_dir = data_dir
+     app.state.data_paths = paths
+     app.state.web_password = web_password
++    app.state.demo_mode = demo_mode
+     app.state.run_tracker = RunTracker(paths["current_run"])
++
++    mode_message = (
++        "paper trading only, real-broker selection disabled"
++        if demo_mode
++        else "demo safeguards disabled (broker remains paper-only today)"
++    )
++    logger.info("demo_mode=%s — %s", demo_mode, mode_message)
+     # Live quotes for the dashboard — short TTL so the freshness badge
+     # actually means something. Tests can replace this with a stub.
+     app.state.live_quotes = LiveQuoteSource(cache_ttl=60.0)
+diff --git a/src/agentic_portfolio/web/static/style.css b/src/agentic_portfolio/web/static/style.css
+index 793228c..4c8d3fa 100644
+--- a/src/agentic_portfolio/web/static/style.css
++++ b/src/agentic_portfolio/web/static/style.css
+@@ -38,6 +38,33 @@ a:hover { color: var(--amber-bright); }
+     padding: 16px;
+ }
+ 
++/* ---- Demo-mode banner -------------------------------------------------- */
++
++/* Sits above the .app wrapper. Amber-on-near-black to fit the Bloomberg
++   palette without screaming. role="status" so screen readers announce it
++   on first load but not on every subsequent fragment swap. */
++.demo-banner {
++    background: var(--bg-panel);
++    color: var(--amber);
++    border-bottom: 1px solid var(--amber);
++    padding: 6px 16px;
++    font-size: 11px;
++    letter-spacing: 0.14em;
++    text-align: center;
++    text-transform: uppercase;
++}
++
++.demo-banner strong {
++    color: var(--amber-bright);
++    font-weight: 700;
++    letter-spacing: 0.18em;
++}
++
++.demo-banner-sep {
++    color: var(--text-dim);
++    margin: 0 6px;
++}
++
+ /* ---- Header ------------------------------------------------------------ */
+ 
+ .header {
+diff --git a/src/agentic_portfolio/web/templates/base.html b/src/agentic_portfolio/web/templates/base.html
+index 69bf2f3..70ffeb5 100644
+--- a/src/agentic_portfolio/web/templates/base.html
++++ b/src/agentic_portfolio/web/templates/base.html
+@@ -10,6 +10,15 @@
+     <script src="https://unpkg.com/uplot@1.6.32/dist/uPlot.iife.min.js" integrity="sha384-Gx3t0zdBAuQOuvvmaLZj7HKEiSgWTAs+VdtNY7wt19QDPTDQjFIwAuXDj0zeN00c" crossorigin="anonymous"></script>
+ </head>
+ <body>
++{% if demo_mode %}
++<div class="demo-banner" role="status" aria-label="Demo mode notice">
++    <strong>DEMO MODE</strong>
++    <span class="demo-banner-sep">·</span>
++    paper trading only, no real money
++    <span class="demo-banner-sep">·</span>
++    LLM API credits consumed on RUN
++</div>
++{% endif %}
+ <div class="app">
+     {% block content %}{% endblock %}
+ </div>
+diff --git a/src/agentic_portfolio/web/views.py b/src/agentic_portfolio/web/views.py
+index 42a9cec..1820c33 100644
+--- a/src/agentic_portfolio/web/views.py
++++ b/src/agentic_portfolio/web/views.py
+@@ -459,7 +459,12 @@ def _decision_detail_context(request: Request, trade_date: str, ticker: str) ->
+     for record in read_jsonl(paths["decisions"]):
+         if record.get("trade_date") == trade_date and record.get("ticker") == ticker:
+             matched = record
+-    return {"decision": matched, "trade_date": trade_date, "ticker": ticker}
++    return {
++        "decision": matched,
++        "trade_date": trade_date,
++        "ticker": ticker,
++        **_demo_context(request),
++    }
+ 
+ 
+ def _full_context(request: Request) -> dict[str, Any]:
+@@ -474,5 +479,15 @@ def _full_context(request: Request) -> dict[str, Any]:
+         **_watchlist_context(request),
+         **_progress_context(request),
+         **_attribution_context(request),
++        **_demo_context(request),
+         "now": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+     }
++
++
++def _demo_context(request: Request) -> dict[str, Any]:
++    """Expose demo_mode to templates so the banner renders site-wide.
++
++    Reads `app.state.demo_mode` (set by the factory). Defaults to True if
++    the attribute is missing, matching the factory's fail-safe contract.
++    """
++    return {"demo_mode": getattr(request.app.state, "demo_mode", True)}
+diff --git a/tests/test_cli.py b/tests/test_cli.py
+index 9836e37..e31705e 100644
+--- a/tests/test_cli.py
++++ b/tests/test_cli.py
+@@ -373,3 +373,22 @@ def test_history_shows_empty_when_no_orders_applied(
+         result = runner.invoke(app, ["history", "--data-dir", str(data_dir)])
+         assert result.exit_code == 0
+         assert "No orders" in result.output
++
++
++class TestParseDemoMode:
++    """Fail-safe contract: only an explicit false-y string disables demo."""
++
++    @pytest.mark.parametrize(
++        "raw",
++        [None, "", "true", "1", "yes", "on", "TRUE", " true ", "definitely", "wat"],
++    )
++    def test_unset_or_unrecognized_stays_on(self, raw: str | None):
++        from agentic_portfolio.cli import _parse_demo_mode
++
++        assert _parse_demo_mode(raw) is True
++
++    @pytest.mark.parametrize("raw", ["false", "FALSE", "0", "no", "off", " False "])
++    def test_explicit_falsy_disables(self, raw: str):
++        from agentic_portfolio.cli import _parse_demo_mode
++
++        assert _parse_demo_mode(raw) is False
+diff --git a/tests/test_web_views.py b/tests/test_web_views.py
+index 253a43f..c2b91a0 100644
+--- a/tests/test_web_views.py
++++ b/tests/test_web_views.py
+@@ -421,6 +421,57 @@ def test_root_includes_all_feature_anchors(self, client: TestClient):
+         assert "uplot" in text.lower()
+ 
+ 
++class TestDemoMode:
++    """The demo-mode banner is the visible half of the DEMO_MODE flag.
++
++    These tests pin the fail-safe contract (default on) and the rendering
++    contract (banner shown iff `demo_mode=True`). The capability seam in
++    `web.api._make_broker` is documented but inert today, so it has nothing
++    to assert on yet — those assertions land alongside a real broker.
++    """
++
++    def test_default_is_demo_mode_on(self, tmp_path: Path):
++        # Fail-safe assertion: a caller that forgets to pass `demo_mode`
++        # must land in demo. If a future refactor flips the default, this
++        # test catches it before real money does.
++        from agentic_portfolio.web.app import create_app
++
++        config_path = tmp_path / "watchlist.yaml"
++        config_path.write_text(yaml.safe_dump(CONFIG_TEMPLATE), encoding="utf-8")
++        data_dir = tmp_path / "data"
++        data_dir.mkdir()
++        Portfolio.create(data_dir / "portfolio.json", starting_cash=10_000.0)
++
++        app = create_app(config_path=config_path, data_dir=data_dir, web_password=None)
++        assert app.state.demo_mode is True
++
++    def test_banner_renders_when_demo_mode_on(self, client: TestClient):
++        response = client.get("/")
++        text = response.text
++        assert "demo-banner" in text
++        assert "DEMO MODE" in text
++        assert "no real money" in text
++
++    def test_banner_absent_when_demo_mode_off(self, tmp_path: Path):
++        from agentic_portfolio.web.app import create_app
++
++        config_path = tmp_path / "watchlist.yaml"
++        config_path.write_text(yaml.safe_dump(CONFIG_TEMPLATE), encoding="utf-8")
++        data_dir = tmp_path / "data"
++        data_dir.mkdir()
++        Portfolio.create(data_dir / "portfolio.json", starting_cash=10_000.0)
++
++        app = create_app(
++            config_path=config_path,
++            data_dir=data_dir,
++            web_password=None,
++            demo_mode=False,
++        )
++        client = TestClient(app)
++        response = client.get("/")
++        assert "demo-banner" not in response.text
++
++
+ class TestFragments:
+     def test_summary_fragment(self, client: TestClient):
+         response = client.get("/fragment/summary")

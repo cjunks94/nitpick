@@ -1,0 +1,379 @@
+diff --git a/CLAUDE.md b/CLAUDE.md
+index 22a3206..5810e57 100644
+--- a/CLAUDE.md
++++ b/CLAUDE.md
+@@ -65,6 +65,30 @@ Beyond Phase 1, the following have shipped:
+ - Pundit authorization: role-based policies (viewer/editor/admin/owner)
+ - Widget CRUD: create/update/delete via API + YAML apply
+ - Dashboard polish: button components, status humanization, duration formatting, custom error pages
++- Performance: YJIT, streaming COPY extraction, Polars DataFrame transforms + CSV writer, per-run metrics
++
++## Performance Layer
++Pipeline execution has two paths, toggled via environment variables:
++
++| Component | Polars (default) | Legacy |
++|---|---|---|
++| Extraction | `COPY TO STDOUT` streaming | `PG.exec` load-all |
++| Transforms | Vectorized DataFrame column ops | Row-by-row Ruby |
++| CSV writing | Polars native Rust writer | Ruby CSV stdlib |
++
++**Toggle env vars:**
++- `EXPORTEE_STREAMING=0` — disable COPY extraction, use QueryExecutor
++- `EXPORTEE_POLARS=0` — disable Polars transforms + CSV writer, use row-by-row Ruby
++- `RUBY_YJIT_ENABLE=0` — disable YJIT
++
++**Key files:**
++- `app/services/connections/streaming_extractor.rb` — COPY TO STDOUT extraction
++- `app/services/transforms/data_frame_pipeline.rb` — Polars widget transforms + CSV writer
++- `app/services/exports/executor.rb` — orchestrator, routes to Polars or legacy path
++- `config/initializers/polars.rb` — `Exportee::Polars.enabled?` toggle
++
++**Per-run metrics** are recorded in `export_runs.metrics` (jsonb):
++`extraction_ms`, `transform_ms`, `write_ms`, `total_ms`, `rows_per_second`
+ 
+ ## API Layer
+ - `app/controllers/api/v1/base_controller.rb` — JSON-only base (ActionController::API)
+diff --git a/README.md b/README.md
+index b1682d9..f0fc116 100644
+--- a/README.md
++++ b/README.md
+@@ -178,6 +178,26 @@ Beyond Phase 1, the following have shipped:
+ - Pundit authorization (role-based: viewer/editor/admin/owner)
+ - Widget CRUD via API and YAML
+ - Dashboard polish (status humanization, duration formatting, button components, custom error pages)
++- Performance engine: YJIT, streaming COPY extraction, Polars DataFrame transforms
++
++## Performance
++
++Pipeline execution uses a high-performance path by default:
++
++- **YJIT** -- Ruby 3.3 JIT compiler, 15-25% throughput improvement
++- **Streaming extraction** -- PostgreSQL `COPY TO STDOUT` protocol, O(chunk) memory instead of loading all rows
++- **Polars transforms** -- Widget transforms run as vectorized Rust DataFrame operations, not row-by-row Ruby
++- **Polars CSV writer** -- Native Rust CSV serialization replaces Ruby stdlib
++
++Every export run records per-stage timing metrics (`extraction_ms`, `transform_ms`, `write_ms`, `rows_per_second`) for performance visibility.
++
++All performance features are toggleable for A/B comparison:
++
++```bash
++EXPORTEE_POLARS=0    # Disable Polars, fall back to Ruby row-by-row + CSV stdlib
++EXPORTEE_STREAMING=0 # Disable COPY streaming, fall back to PG.exec
++RUBY_YJIT_ENABLE=0   # Disable YJIT
++```
+ 
+ See [docs/epics/README.md](docs/epics/README.md) for the full epic breakdown across phases.
+ 
+diff --git a/app/services/exports/executor.rb b/app/services/exports/executor.rb
+index 72ccbc5..f3d1b20 100644
+--- a/app/services/exports/executor.rb
++++ b/app/services/exports/executor.rb
+@@ -19,11 +19,19 @@ def call(export, pipeline_run:, compiled:)
+ 
+       begin
+         rows = timed(timings, :extraction_ms) { extract_rows(pipeline) }
+-        rows = timed(timings, :transform_ms) do
+-          rows = Mappings::Applicator.call(rows, pipeline.mapping)
+-          apply_widgets(rows, pipeline.transforms)
++
++        if polars_enabled?
++          rows = timed(timings, :transform_ms) { Mappings::Applicator.call(rows, pipeline.mapping) }
++          result = timed(timings, :write_ms) do
++            polars_transform_and_write(rows, pipeline.transforms, export, export_run)
++          end
++        else
++          rows = timed(timings, :transform_ms) do
++            rows = Mappings::Applicator.call(rows, pipeline.mapping)
++            apply_widgets(rows, pipeline.transforms)
++          end
++          result = timed(timings, :write_ms) { write_and_attach(rows, export, export_run) }
+         end
+-        result = timed(timings, :write_ms) { write_and_attach(rows, export, export_run) }
+ 
+         finished = Time.current
+         total_ms = ((finished - export_run.started_at) * 1000).round
+@@ -66,6 +74,41 @@ def timed(timings, key)
+       result
+     end
+ 
++    def polars_enabled?
++      defined?(Exportee::Polars) && Exportee::Polars.enabled?
++    end
++
++    def polars_transform_and_write(rows, transforms, export, export_run)
++      filename = "#{export.pipeline.name}-#{export.name}-#{Time.current.strftime('%Y%m%d%H%M%S')}.csv"
++      tempfile = Tempfile.new([ "export-", ".csv" ])
++
++      begin
++        result = Transforms::DataFramePipeline.call_and_write_csv(
++          rows, transforms,
++          path: tempfile.path,
++          mapping_fields: export.pipeline.mapping.fields
++        )
++
++        if result[:bytes_written] > max_upload_bytes
++          raise ArtifactTooLarge.new(actual_bytes: result[:bytes_written], limit_bytes: max_upload_bytes)
++        end
++
++        tempfile.rewind
++        export_run.artifact.attach(io: tempfile, filename: filename, content_type: "text/csv")
++
++        dest_path = export.destination.config["path"]
++        if dest_path.present?
++          FileUtils.mkdir_p(File.dirname(dest_path))
++          FileUtils.cp(tempfile.path, dest_path)
++        end
++
++        result
++      ensure
++        tempfile.close
++        tempfile.unlink
++      end
++    end
++
+     def extract_rows(pipeline)
+       if streaming_enabled?(pipeline)
+         Connections::StreamingExtractor.call_to_array(pipeline.connection, pipeline.query_text)
+diff --git a/app/services/transforms/data_frame_pipeline.rb b/app/services/transforms/data_frame_pipeline.rb
+new file mode 100644
+index 0000000..20d40c6
+--- /dev/null
++++ b/app/services/transforms/data_frame_pipeline.rb
+@@ -0,0 +1,111 @@
++require "csv"
++
++module Transforms
++  # Applies widget transforms using Polars DataFrames (vectorized Rust operations)
++  # instead of row-by-row Ruby iteration. 10-100x faster for large datasets.
++  #
++  # Toggle: only used when Exportee::Polars.enabled? is true.
++  # Fallback: Exports::Executor.apply_widgets (row-by-row Ruby).
++  module DataFramePipeline
++    module_function
++
++    # Accepts an array of row hashes, applies transforms, returns array of row hashes.
++    # Same input/output contract as the row-by-row path for drop-in compatibility.
++    def call(rows, transforms)
++      return rows if rows.empty?
++
++      df = Polars::DataFrame.new(rows)
++      df = apply_transforms(df, transforms)
++      df.to_hashes
++    end
++
++    # Accepts a DataFrame, applies transforms, writes CSV directly.
++    # Skips the round-trip through Ruby hashes for maximum performance.
++    def call_and_write_csv(rows, transforms, path:, mapping_fields:)
++      return legacy_write(rows, path, mapping_fields) if rows.empty?
++
++      df = Polars::DataFrame.new(rows)
++      df = apply_transforms(df, transforms)
++
++      headers = mapping_fields.map { |f| f["target"] }
++      df = df.select(headers.select { |h| df.columns.include?(h) })
++
++      df.write_csv(path)
++
++      {
++        row_count: df.height,
++        bytes_written: File.size(path),
++        artifact_url: path,
++        artifact_checksum: Digest::SHA256.file(path).hexdigest
++      }
++    end
++
++    def apply_transforms(df, transforms)
++      return df if transforms.blank?
++
++      transforms.each do |transform|
++        widget_name = transform["widget"]
++        config = transform["config"] || {}
++        df = apply_one(df, widget_name, config)
++      end
++
++      df
++    end
++
++    def apply_one(df, widget_name, config)
++      case widget_name
++      when "select_columns"
++        keep = config.fetch("keep", [])
++        df.select(keep.select { |c| df.columns.include?(c) })
++      when "rename"
++        from = config.fetch("from")
++        to = config.fetch("to")
++        df.columns.include?(from) ? df.rename({ from => to }) : df
++      when "filter"
++        apply_filter(df, config)
++      when "mask_email"
++        # Polars' Rust regex engine doesn't support lookahead/lookbehind.
++        # Fall back to row-by-row Ruby which handles this correctly.
++        apply_row_by_row_fallback(df, "mask_email", config)
++      when "redact"
++        field = config.fetch("on")
++        replacement = config.fetch("replacement", "[REDACTED]")
++        df.columns.include?(field) ? df.with_columns(Polars.lit(replacement).alias(field)) : df
++      else
++        # Unknown widget — fall back to row-by-row for this one transform
++        apply_row_by_row_fallback(df, widget_name, config)
++      end
++    end
++
++    def apply_filter(df, config)
++      column = config.fetch("column")
++      operator = config.fetch("operator")
++      value = config.fetch("value")
++      return df unless df.columns.include?(column)
++
++      expr = Polars.col(column)
++      filter_expr = case operator
++      when "eq"  then expr.eq(value)
++      when "neq" then expr.ne(value)
++      when "gt"  then expr.gt(value)
++      when "lt"  then expr.lt(value)
++      when "gte" then expr.gt_eq(value)
++      when "lte" then expr.lt_eq(value)
++      else return df
++      end
++
++      df.filter(filter_expr)
++    end
++
++    def apply_row_by_row_fallback(df, widget_name, config)
++      builtin = Widgets::Builtins.const_get(widget_name.camelize)
++      rows = df.to_hashes
++      transformed = rows.filter_map { |row| builtin.call(row, config) }
++      transformed.empty? ? df.clear : Polars::DataFrame.new(transformed)
++    end
++
++    def legacy_write(rows, path, mapping_fields)
++      Destinations::Writers::Csv.write(rows: rows, path: path, mapping_fields: mapping_fields)
++    end
++  end
++end
+diff --git a/spec/services/transforms/data_frame_pipeline_spec.rb b/spec/services/transforms/data_frame_pipeline_spec.rb
+new file mode 100644
+index 0000000..9b739f2
+--- /dev/null
++++ b/spec/services/transforms/data_frame_pipeline_spec.rb
+@@ -0,0 +1,120 @@
++require "rails_helper"
++
++RSpec.describe Transforms::DataFramePipeline, if: Exportee::Polars.enabled? do
++  let(:rows) do
++    [
++      { "name" => "Alice", "email" => "alice@example.com", "ssn" => "123-45-6789", "age" => "30" },
++      { "name" => "Bob", "email" => "bob@example.com", "ssn" => "987-65-4321", "age" => "25" },
++      { "name" => "Carol", "email" => "carol@example.com", "ssn" => "555-12-3456", "age" => "35" }
++    ]
++  end
++
++  describe ".call" do
++    it "returns rows unchanged when transforms are empty" do
++      result = described_class.call(rows, [])
++      expect(result).to eq(rows)
++    end
++
++    it "returns empty array for empty input" do
++      result = described_class.call([], [ { "widget" => "redact", "config" => { "on" => "email" } } ])
++      expect(result).to eq([])
++    end
++
++    it "applies select_columns" do
++      transforms = [ { "widget" => "select_columns", "config" => { "keep" => %w[name email] } } ]
++      result = described_class.call(rows, transforms)
++      expect(result.first.keys).to match_array(%w[name email])
++      expect(result.length).to eq(3)
++    end
++
++    it "applies rename" do
++      transforms = [ { "widget" => "rename", "config" => { "from" => "name", "to" => "full_name" } } ]
++      result = described_class.call(rows, transforms)
++      expect(result.first).to have_key("full_name")
++      expect(result.first).not_to have_key("name")
++    end
++
++    it "applies redact" do
++      transforms = [ { "widget" => "redact", "config" => { "on" => "ssn" } } ]
++      result = described_class.call(rows, transforms)
++      expect(result.map { |r| r["ssn"] }).to all(eq("[REDACTED]"))
++    end
++
++    it "applies redact with custom replacement" do
++      transforms = [ { "widget" => "redact", "config" => { "on" => "ssn", "replacement" => "***" } } ]
++      result = described_class.call(rows, transforms)
++      expect(result.map { |r| r["ssn"] }).to all(eq("***"))
++    end
++
++    it "applies filter with eq operator" do
++      transforms = [ { "widget" => "filter", "config" => { "column" => "name", "operator" => "eq", "value" => "Alice" } } ]
++      result = described_class.call(rows, transforms)
++      expect(result.length).to eq(1)
++      expect(result.first["name"]).to eq("Alice")
++    end
++
++    it "applies mask_email" do
++      transforms = [ { "widget" => "mask_email", "config" => { "on" => "email" } } ]
++      result = described_class.call(rows, transforms)
++      result.each do |row|
++        expect(row["email"]).to include("*")
++        expect(row["email"]).to include("@")
++      end
++    end
++
++    it "chains multiple transforms in order" do
++      transforms = [
++        { "widget" => "mask_email", "config" => { "on" => "email" } },
++        { "widget" => "redact", "config" => { "on" => "ssn" } },
++        { "widget" => "select_columns", "config" => { "keep" => %w[name email] } }
++      ]
++      result = described_class.call(rows, transforms)
++      expect(result.first.keys).to match_array(%w[name email])
++      expect(result.first["email"]).to include("*")
++      expect(result.length).to eq(3)
++    end
++
++    it "falls back to row-by-row for unknown widgets" do
++      # Define a temporary custom widget
++      stub_const("Widgets::Builtins::CustomThing", Module.new {
++        module_function
++        def call(row, _config)
++          row.merge("custom" => "yes")
++        end
++      })
++
++      transforms = [ { "widget" => "custom_thing", "config" => {} } ]
++      result = described_class.call(rows, transforms)
++      expect(result.first["custom"]).to eq("yes")
++    end
++  end
++
++  describe ".call_and_write_csv" do
++    let(:tempfile) { Tempfile.new(%w[test- .csv]) }
++    let(:mapping_fields) { [ { "target" => "name" }, { "target" => "email" } ] }
++
++    after { tempfile.close; tempfile.unlink }
++
++    it "writes CSV and returns result hash" do
++      transforms = [ { "widget" => "select_columns", "config" => { "keep" => %w[name email] } } ]
++      result = described_class.call_and_write_csv(
++        rows, transforms, path: tempfile.path, mapping_fields: mapping_fields
++      )
++
++      expect(result[:row_count]).to eq(3)
++      expect(result[:bytes_written]).to be_positive
++      expect(result[:artifact_checksum]).to match(/\A[0-9a-f]{64}\z/)
++
++      csv_content = File.read(tempfile.path)
++      expect(csv_content.lines.first.chomp).to eq("name,email")
++      expect(csv_content.lines.length).to eq(4) # header + 3 rows
++    end
++
++    it "returns legacy result for empty rows" do
++      result = described_class.call_and_write_csv(
++        [], [], path: tempfile.path, mapping_fields: mapping_fields
++      )
++      expect(result[:row_count]).to eq(0)
++    end
++  end
++end
