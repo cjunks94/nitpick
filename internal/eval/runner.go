@@ -46,7 +46,9 @@ type CaseResult struct {
 }
 
 // Run loads cases, executes the provider against each, and writes a report.
-func Run(ctx context.Context, casesPath, outPath string, p provider.Provider) error {
+// When loadGuidelines is false, per-repo CLAUDE.md files are skipped — useful
+// for measuring baseline variance against the with-guidelines configuration.
+func Run(ctx context.Context, casesPath, outPath string, p provider.Provider, loadGuidelines bool) error {
 	cases, err := loadCases(casesPath)
 	if err != nil {
 		return fmt.Errorf("load cases: %w", err)
@@ -64,9 +66,12 @@ func Run(ctx context.Context, casesPath, outPath string, p provider.Provider) er
 		if err != nil {
 			return fmt.Errorf("parse %s: %w", c.DiffPath, err)
 		}
-		guidelines, err := loadRepoGuidelines(reposDir, c.Repo)
-		if err != nil {
-			return fmt.Errorf("load guidelines for %s: %w", c.Repo, err)
+		var guidelines []byte
+		if loadGuidelines {
+			guidelines, err = loadRepoGuidelines(reposDir, c.Repo)
+			if err != nil {
+				return fmt.Errorf("load guidelines for %s: %w", c.Repo, err)
+			}
 		}
 		res, err := p.Review(ctx, provider.ReviewRequest{
 			Hunks:          hunks,
