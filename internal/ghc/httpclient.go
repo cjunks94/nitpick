@@ -1,0 +1,99 @@
+package ghc
+
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"io"
+	"net/http"
+	"time"
+
+	"github.com/cjunks94/nitpick/internal/provider"
+)
+
+// HTTPClient calls the GitHub REST API directly using an installation token.
+// Used by `nitpick serve` where the gh CLI isn't available (Railway container).
+// Distinct from the gh-subprocess functions in pr.go / comments.go which the
+// local `nitpick review` command uses.
+type HTTPClient struct {
+	BaseURL    string // defaults to https://api.github.com
+	Token      string // installation token (Authorization: token <Token>)
+	HTTPClient *http.Client
+}
+
+// NewHTTPClient returns a client wired with reasonable defaults.
+func NewHTTPClient(token string) *HTTPClient {
+	return &HTTPClient{
+		BaseURL: "https://api.github.com",
+		Token:   token,
+		HTTPClient: &http.Client{
+			Timeout: 30 * time.Second,
+		},
+	}
+}
+
+// FetchDiff returns the unified diff for a PR via the REST API. Equivalent
+// to `gh pr diff <n>` but uses the installation token. The media type header
+// is what makes GitHub return raw diff text rather than the JSON resource.
+func (c *HTTPClient) FetchDiff(ctx context.Context, repo string, pr int) ([]byte, error) {
+	url := fmt.Sprintf("%s/repos/%s/pulls/%d", c.BaseURL, repo, pr)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "token "+c.Token)
+	req.Header.Set("Accept", "application/vnd.github.diff")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("fetch diff: %w", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("fetch diff: HTTP %d: %s", resp.StatusCode, truncate(string(body), 500))
+	}
+	return body, nil
+}
+
+// PostReview posts a single PR review with inline comments via the REST API.
+// Equivalent to comments.go:PostReview but uses the installation token. The
+// body shape is identical (shared via BuildReviewBody) — only the transport
+// differs.
+func (c *HTTPClient) PostReview(ctx context.Context, repo string, pr int, comments []provider.Comment) error {
+	if len(comments) == 0 {
+		return nil
+	}
+	body, err := BuildReviewBody(comments)
+	if err != nil {
+		return err
+	}
+	url := fmt.Sprintf("%s/repos/%s/pulls/%d/reviews", c.BaseURL, repo, pr)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "token "+c.Token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("post review: %w", err)
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("post review: HTTP %d: %s", resp.StatusCode, truncate(string(respBody), 500))
+	}
+	return nil
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
+}

@@ -13,6 +13,34 @@ import (
 	"github.com/cjunks94/nitpick/internal/provider"
 )
 
+// BuildReviewBody marshals comments into the GitHub review API JSON payload.
+// One review event with an inline comment per finding (path + line + side=RIGHT
+// for the modern review-comment API). Sorted by file then line so the timeline
+// reads top-to-bottom of the diff. Shared between the gh-subprocess path (used
+// by local `nitpick review`) and the HTTP path (used by `nitpick serve`).
+func BuildReviewBody(comments []provider.Comment) ([]byte, error) {
+	sort.SliceStable(comments, func(i, j int) bool {
+		if comments[i].File != comments[j].File {
+			return comments[i].File < comments[j].File
+		}
+		return comments[i].Line < comments[j].Line
+	})
+	apiComments := make([]map[string]any, 0, len(comments))
+	for _, c := range comments {
+		apiComments = append(apiComments, map[string]any{
+			"path": c.File,
+			"line": c.Line,
+			"side": "RIGHT",
+			"body": renderBody(c),
+		})
+	}
+	return json.Marshal(map[string]any{
+		"event":    "COMMENT",
+		"body":     fmt.Sprintf("nitpick — %d finding(s)", len(comments)),
+		"comments": apiComments,
+	})
+}
+
 // PostReview posts a single PR review with inline comments via `gh api`.
 // Uses GitHub's modern review-comment fields (`line` + `side=RIGHT`) so the
 // diff parser's NewLineNum is what we send. The whole batch is one review
@@ -26,28 +54,7 @@ func PostReview(ctx context.Context, repo string, pr int, comments []provider.Co
 		return fmt.Errorf("repo is required to post a review")
 	}
 
-	sort.SliceStable(comments, func(i, j int) bool {
-		if comments[i].File != comments[j].File {
-			return comments[i].File < comments[j].File
-		}
-		return comments[i].Line < comments[j].Line
-	})
-
-	apiComments := make([]map[string]any, 0, len(comments))
-	for _, c := range comments {
-		apiComments = append(apiComments, map[string]any{
-			"path": c.File,
-			"line": c.Line,
-			"side": "RIGHT",
-			"body": renderBody(c),
-		})
-	}
-
-	body, err := json.Marshal(map[string]any{
-		"event":    "COMMENT",
-		"body":     fmt.Sprintf("nitpick — %d finding(s)", len(comments)),
-		"comments": apiComments,
-	})
+	body, err := BuildReviewBody(comments)
 	if err != nil {
 		return err
 	}
