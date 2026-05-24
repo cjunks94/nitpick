@@ -15,8 +15,10 @@ import (
 
 // flexInt accepts JSON numbers OR strings convertible to int. Anthropic
 // models — especially Sonnet on a verbose prompt — occasionally emit line
-// numbers as strings ("80") despite the schema asking for int. Without this
-// the whole eval call errors and we lose the result.
+// numbers as strings ("80") or as line ranges ("541-543") despite the
+// schema asking for int. Without this the whole eval call errors and we
+// lose the result. For ranges, the first number wins (closest to the
+// start of the change is the most useful comment anchor).
 type flexInt int
 
 func (i *flexInt) UnmarshalJSON(data []byte) error {
@@ -28,6 +30,14 @@ func (i *flexInt) UnmarshalJSON(data []byte) error {
 	var s string
 	if err := json.Unmarshal(data, &s); err != nil {
 		return fmt.Errorf("line: not int or string: %s", data)
+	}
+	s = strings.TrimSpace(s)
+	// Handle range form "X-Y" / "X..Y" / "X,Y" by taking the first number.
+	for _, sep := range []string{"-", "..", ","} {
+		if idx := strings.Index(s, sep); idx > 0 {
+			s = s[:idx]
+			break
+		}
 	}
 	v, err := strconv.Atoi(strings.TrimSpace(s))
 	if err != nil {
@@ -154,8 +164,11 @@ func extractText(m *anthropic.Message) string {
 }
 
 // parseFindings handles JSON the model may have wrapped in prose despite the
-// instruction. Strips a leading ```json fence if present, then locates the
-// first { and parses through the matching }.
+// instruction. Strategy: locate the findings-shaped JSON object specifically
+// (anchored on the "findings" key) rather than just the first '{', which can
+// match prose like "{beforeId: 'aircraft-markers'}". A prose-only response
+// with no findings JSON is treated as empty findings, not an error — the
+// model declined to flag anything, which is a valid silent review.
 func parseFindings(text string) ([]Comment, error) {
 	text = strings.TrimSpace(text)
 	text = strings.TrimPrefix(text, "```json")
@@ -163,10 +176,20 @@ func parseFindings(text string) ([]Comment, error) {
 	text = strings.TrimSuffix(text, "```")
 	text = strings.TrimSpace(text)
 
-	start := strings.Index(text, "{")
+	// Anchor on the `"findings"` key; the JSON object surrounding it is the
+	// one we want. Falls back to first '{' if anchor not found AND the text
+	// starts with '{' (well-formed response with empty object).
+	findingsIdx := strings.Index(text, `"findings"`)
+	if findingsIdx < 0 {
+		if !strings.HasPrefix(text, "{") {
+			return nil, nil // prose-only response → silent review
+		}
+		findingsIdx = 0
+	}
+	start := strings.LastIndex(text[:findingsIdx+1], "{")
 	end := strings.LastIndex(text, "}")
 	if start < 0 || end <= start {
-		return nil, fmt.Errorf("no JSON object found")
+		return nil, nil // findings key but no enclosing braces → silent
 	}
 
 	var payload struct {
