@@ -12,6 +12,7 @@ coverage.out
 .nitpick.local.yaml
 .env
 .env.*
+!.env.example
 
 # Editor
 .idea/

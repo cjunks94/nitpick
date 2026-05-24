@@ -19,7 +19,11 @@ Eval against 20 hand-labeled merged PRs across 5 of my repos (Go, Python, Rails,
 
 The git history of [`eval/REPORT.md`](eval/REPORT.md) is the prompt-tuning artifact — each commit captures one tuning iteration's measured impact.
 
-## Quick start — GitHub Action
+## Deployment options
+
+**Hosted (recommended — install once, covers N repos):** run `nitpick serve` as a GitHub App on Railway / Fly / any container host. Webhooks fire on every PR open / push; reviews post async. See [`DEPLOY.md`](DEPLOY.md) for the end-to-end guide (GitHub App setup, Railway env, repo installation).
+
+**Per-repo GitHub Action (no hosting needed):**
 
 ```yaml
 # .github/workflows/review.yml
@@ -32,7 +36,7 @@ jobs:
       pull-requests: write
       contents: read
     steps:
-      - uses: cjunks94/nitpick@v0.1.0
+      - uses: cjunks94/nitpick@v0.2.0
         with:
           provider: anthropic
           anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
