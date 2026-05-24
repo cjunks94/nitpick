@@ -106,7 +106,7 @@ func (a Anthropic) Review(ctx context.Context, req ReviewRequest) (ReviewResult,
 		})
 	}
 
-	userText := renderHunks(req.Hunks)
+	userText := renderUserMessage(req)
 
 	resp, err := a.client.Messages.New(ctx, anthropic.MessageNewParams{
 		Model:     a.model,
@@ -222,12 +222,26 @@ func parseFindings(text string) ([]Comment, error) {
 	return out, nil
 }
 
-// renderHunks formats parsed hunks for the user message. Includes new-file
-// line numbers in the gutter so the model can cite them back accurately.
-func renderHunks(hunks []diff.Hunk) string {
+// renderUserMessage builds the full user-side payload: optional context-files
+// block (whole-file content for files referenced by the diff, so the model
+// can see definitions/return paths/framework conventions outside the diff
+// window), followed by the diff itself with line numbers.
+//
+// Order matters — context first so the model has it loaded when reading the
+// diff. The prompt is explicit that ONLY diff lines may be flagged; context
+// is read-only background.
+func renderUserMessage(req ReviewRequest) string {
 	var b strings.Builder
-	b.WriteString("Review the following PR diff and report findings per the system instructions. Each changed line is prefixed with its new-file line number.\n\n")
-	for _, h := range hunks {
+	if len(req.ContextFiles) > 0 {
+		b.WriteString("=== CONTEXT FILES (read-only background, do NOT flag issues in these) ===\n")
+		b.WriteString("Full content of files referenced by the diff at the PR head SHA. Use these to understand types, return paths, helper definitions, and framework conventions. Findings must still be anchored on lines that appear in the diff below.\n\n")
+		for _, cf := range req.ContextFiles {
+			fmt.Fprintf(&b, "--- file: %s ---\n%s\n--- end %s ---\n\n", cf.Path, string(cf.Content), cf.Path)
+		}
+	}
+	b.WriteString("=== DIFF (review THESE lines; report findings on added lines only) ===\n")
+	b.WriteString("Each changed line is prefixed with its new-file line number. Report findings per the system instructions.\n\n")
+	for _, h := range req.Hunks {
 		fmt.Fprintf(&b, "=== %s ===\n", h.File)
 		fmt.Fprintf(&b, "@@ +%d,%d @@\n", h.NewStart, h.NewLines)
 		for _, line := range h.Lines {

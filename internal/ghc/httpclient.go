@@ -32,6 +32,37 @@ func NewHTTPClient(token string) *HTTPClient {
 	}
 }
 
+// FetchFile returns the raw contents of a file at a given commit SHA. Used
+// to build the context block for the LLM — the diff alone doesn't show
+// definitions, return paths, or framework conventions that live outside
+// the changed lines. Returns a NotFound-shaped error when the file doesn't
+// exist at that ref (e.g. file was deleted in the PR, or it's a new file
+// the API resolves differently).
+func (c *HTTPClient) FetchFile(ctx context.Context, repo, sha, path string) ([]byte, error) {
+	url := fmt.Sprintf("%s/repos/%s/contents/%s?ref=%s", c.BaseURL, repo, path, sha)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "token "+c.Token)
+	req.Header.Set("Accept", "application/vnd.github.raw+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("fetch file %s: %w", path, err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, fmt.Errorf("file %s not found at %s", path, sha)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("fetch file %s: HTTP %d: %s", path, resp.StatusCode, truncate(string(body), 300))
+	}
+	return body, nil
+}
+
 // FetchDiff returns the unified diff for a PR via the REST API. Equivalent
 // to `gh pr diff <n>` but uses the installation token. The media type header
 // is what makes GitHub return raw diff text rather than the JSON resource.

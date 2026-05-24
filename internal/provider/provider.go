@@ -22,6 +22,21 @@ type ReviewRequest struct {
 	// RepoGuidelines is the optional repo CLAUDE.md / contributor guide. The
 	// Anthropic provider should pass this as a cache-controlled system block.
 	RepoGuidelines []byte
+	// ContextFiles is the full content of files referenced by the diff at the
+	// PR head SHA. Lets the reviewer see definitions, return paths, and
+	// framework conventions that don't appear in the changed lines. Empty in
+	// the local CLI path; populated by `nitpick serve` after fetching via the
+	// installation token. The provider renders these in the user message as a
+	// labeled context block; the prompt instructs the model to flag only diff
+	// lines, treating context as read-only background.
+	ContextFiles []ContextFile
+}
+
+// ContextFile is one whole-file context entry: path relative to repo root +
+// raw content. Capped upstream so the user message stays under model context.
+type ContextFile struct {
+	Path    string
+	Content []byte
 }
 
 type ReviewResult struct {

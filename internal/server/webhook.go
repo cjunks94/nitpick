@@ -207,7 +207,12 @@ func (h *Handler) review(ctx context.Context, log *slog.Logger, pre *pullRequest
 		return
 	}
 
-	res, err := h.Provider.Review(ctx, provider.ReviewRequest{Hunks: hunks})
+	contextFiles := fetchContextFiles(ctx, log, client, pre, hunks)
+
+	res, err := h.Provider.Review(ctx, provider.ReviewRequest{
+		Hunks:        hunks,
+		ContextFiles: contextFiles,
+	})
 	if err != nil {
 		// Per-PR errors should not crash the server — they're already
 		// logged for that PR, and the next PR isn't blocked.
@@ -235,4 +240,67 @@ func (h *Handler) review(ctx context.Context, log *slog.Logger, pre *pullRequest
 		"findings", len(res.Comments),
 		"duration_ms", time.Since(start).Milliseconds(),
 		"cost_usd", res.CostUSD)
+}
+
+// context-file fetch caps. The model context windows are 200K (Haiku) and
+// 1M (Sonnet/Opus), so these are conservative. Token cost matters more than
+// the limit — every extra 4K chars is ~1K tokens, roughly $0.001 on Haiku.
+const (
+	maxContextFiles      = 5
+	maxContextFileBytes  = 60 * 1024  // skip individual files larger than 60 KiB
+	maxContextTotalBytes = 200 * 1024 // skip remaining files once total exceeds 200 KiB
+)
+
+// fetchContextFiles pulls the full content of each unique file touched by
+// the diff (at the PR head SHA), to give the reviewer enough context to
+// avoid the "needs surrounding code" false-positive class. Returns nil on
+// any error — diff-only review is the graceful fallback and worse than
+// having context but better than crashing.
+func fetchContextFiles(ctx context.Context, log *slog.Logger, client *ghc.HTTPClient, pre *pullRequestEvent, hunks []diff.Hunk) []provider.ContextFile {
+	seen := make(map[string]bool, len(hunks))
+	var paths []string
+	for _, h := range hunks {
+		if h.File == "" || seen[h.File] {
+			continue
+		}
+		seen[h.File] = true
+		paths = append(paths, h.File)
+		if len(paths) >= maxContextFiles {
+			break
+		}
+	}
+	if len(paths) == 0 {
+		return nil
+	}
+
+	var (
+		out        []provider.ContextFile
+		totalBytes int
+	)
+	for _, p := range paths {
+		content, err := client.FetchFile(ctx, pre.Repository.FullName, pre.PullRequest.Head.SHA, p)
+		if err != nil {
+			// Most common: new file that doesn't exist at base, or file
+			// deleted in the PR. Skip silently — the diff still works.
+			log.Debug("context file fetch skipped", "path", p, "err", err)
+			continue
+		}
+		if len(content) > maxContextFileBytes {
+			log.Debug("context file too large, skipping",
+				"path", p, "bytes", len(content), "cap", maxContextFileBytes)
+			continue
+		}
+		if totalBytes+len(content) > maxContextTotalBytes {
+			log.Debug("context budget exhausted; stopping fetch",
+				"so_far_bytes", totalBytes, "cap", maxContextTotalBytes, "remaining_files", len(paths)-len(out))
+			break
+		}
+		out = append(out, provider.ContextFile{Path: p, Content: content})
+		totalBytes += len(content)
+	}
+	log.Info("context fetched",
+		"files_attempted", len(paths),
+		"files_attached", len(out),
+		"total_bytes", totalBytes)
+	return out
 }

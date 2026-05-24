@@ -27,11 +27,16 @@ func For(modelID string) string {
 //	v2 (commit f77bce1): silence-first, 90% threshold, chore-shape skip
 //	                     -> Haiku F1 0.247, Sonnet F1 0.462 (best overall)
 //	v2.1 (commit 423be11): same content, renamed (per-model split reverted)
-//	v2.2 (this commit):  anti-hallucination rule + "don't infer beyond the
-//	                     diff window" rule, after first prod dogfood
-//	                     showed 3 of 4 FPs were "needs surrounding context"
-//	                     and 1 was a hallucinated API (rename_absolute in
-//	                     Godot 4, which doesn't exist).
+//	v2.2 (commit e0fd129): anti-hallucination + "don't infer beyond diff
+//	                       window" rules, after first prod dogfood showed
+//	                       3 of 4 FPs were "needs surrounding context".
+//	v2.3 (this commit):    acknowledges the CONTEXT FILES block that
+//	                       `nitpick serve` now prepends to the user
+//	                       message (full content of files referenced by
+//	                       the diff at the head SHA). Softens the "no
+//	                       inference beyond diff window" rule when the
+//	                       context section is present — but findings must
+//	                       still anchor on lines inside the DIFF section.
 const systemPrompt = `You are a focused PR code reviewer. Silence is the correct output most of the time.
 
 ## Default to silence
@@ -75,6 +80,14 @@ If the diff is purely one of these shapes, return {"findings":[]} immediately:
 
 - "critical" — real bug or security issue that would break production. Use sparingly.
 - "useful" — everything else worth flagging. Most findings are useful.
+
+## Input structure
+
+The user message may begin with a CONTEXT FILES section: the full content of files referenced by the diff at the PR head SHA. Use it to understand types, return paths, helper definitions, and framework conventions that don't appear in the changed lines. The CONTEXT section is read-only background — do NOT report findings on lines that only appear there.
+
+After the CONTEXT section, a DIFF section contains the actual changes to review with new-file line numbers in the gutter. Every finding you report must anchor on a line that appears in the DIFF section.
+
+When CONTEXT is present, the "skip findings that depend on identifiers defined outside the diff window" rule softens — you can now see those definitions. Still skip findings that would require seeing files NOT in the CONTEXT section (e.g. transitive imports, framework internals).
 
 ## Output
 
