@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/cjunks94/nitpick/internal/config"
 	"github.com/cjunks94/nitpick/internal/diff"
 	"github.com/cjunks94/nitpick/internal/ghapp"
 	"github.com/cjunks94/nitpick/internal/ghc"
@@ -208,10 +209,12 @@ func (h *Handler) review(ctx context.Context, log *slog.Logger, pre *pullRequest
 	}
 
 	contextFiles := fetchContextFiles(ctx, log, client, pre, hunks)
+	repoNotes := fetchRepoNotes(ctx, log, client, pre)
 
 	res, err := h.Provider.Review(ctx, provider.ReviewRequest{
-		Hunks:        hunks,
-		ContextFiles: contextFiles,
+		Hunks:          hunks,
+		ContextFiles:   contextFiles,
+		RepoGuidelines: repoNotes,
 	})
 	if err != nil {
 		// Per-PR errors should not crash the server — they're already
@@ -249,7 +252,55 @@ const (
 	maxContextFiles      = 5
 	maxContextFileBytes  = 60 * 1024  // skip individual files larger than 60 KiB
 	maxContextTotalBytes = 200 * 1024 // skip remaining files once total exceeds 200 KiB
+
+	// repoConfigPath is the convention nitpick looks for. Matches the
+	// .nitpick.yaml.example shipped in this repo. We don't fall back to
+	// alternate names (.nitpickrc, nitpick.yml) — convention over config.
+	repoConfigPath     = ".nitpick.yaml"
+	maxRepoNotesBytes  = 16 * 1024 // sanity cap; real notes are 200-500 tokens
+	maxRepoConfigBytes = 32 * 1024 // size of the .nitpick.yaml itself
 )
+
+// fetchRepoNotes pulls .nitpick.yaml from the repo at the PR head SHA and
+// returns the parsed context_notes as bytes (to be injected as a cached
+// <repo-notes> system block by the provider). Returns nil on any error —
+// no config file is the common case, not an error to surface.
+//
+// Why head SHA: if a PR adds or updates .nitpick.yaml, those changes take
+// effect on the PR's own review. Mental model: "the bot reviews you with
+// the config you're proposing." A human still sees the .nitpick.yaml diff
+// in normal PR review, so this isn't a security hole — a malicious notes
+// edit would be visible.
+func fetchRepoNotes(ctx context.Context, log *slog.Logger, client *ghc.HTTPClient, pre *pullRequestEvent) []byte {
+	content, err := client.FetchFile(ctx, pre.Repository.FullName, pre.PullRequest.Head.SHA, repoConfigPath)
+	if err != nil {
+		// Most common: repo has no .nitpick.yaml. Debug-level only.
+		log.Debug("no .nitpick.yaml", "err", err)
+		return nil
+	}
+	if len(content) > maxRepoConfigBytes {
+		log.Warn(".nitpick.yaml exceeds size cap; skipping",
+			"bytes", len(content), "cap", maxRepoConfigBytes)
+		return nil
+	}
+	cfg, err := config.Parse(content)
+	if err != nil {
+		log.Warn("parse .nitpick.yaml failed; skipping repo notes", "err", err)
+		return nil
+	}
+	notes := cfg.Review.ContextNotes
+	if notes == "" {
+		log.Debug(".nitpick.yaml present but no context_notes")
+		return nil
+	}
+	if len(notes) > maxRepoNotesBytes {
+		log.Warn("context_notes exceeds size cap; truncating",
+			"bytes", len(notes), "cap", maxRepoNotesBytes)
+		notes = notes[:maxRepoNotesBytes]
+	}
+	log.Info("repo notes loaded", "bytes", len(notes))
+	return []byte(notes)
+}
 
 // fetchContextFiles pulls the full content of each unique file touched by
 // the diff (at the PR head SHA), to give the reviewer enough context to

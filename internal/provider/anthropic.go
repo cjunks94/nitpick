@@ -98,8 +98,13 @@ func (a Anthropic) Review(ctx context.Context, req ReviewRequest) (ReviewResult,
 		},
 	}
 	if len(req.RepoGuidelines) > 0 {
+		// Wrapped in <repo-notes> to match the prompt v2.6 contract. Tag
+		// name is what the model keys off, not the Go field name (which
+		// is still RepoGuidelines for historical reasons — the same field
+		// was originally populated from CLAUDE.md before per-repo
+		// .nitpick.yaml notes became the canonical source).
 		systemBlocks = append(systemBlocks, anthropic.TextBlockParam{
-			Text: "<repo-guidelines>\n" + string(req.RepoGuidelines) + "\n</repo-guidelines>",
+			Text: "<repo-notes source=\".nitpick.yaml\">\n" + string(req.RepoGuidelines) + "\n</repo-notes>",
 			CacheControl: anthropic.CacheControlEphemeralParam{
 				TTL: anthropic.CacheControlEphemeralTTLTTL1h,
 			},

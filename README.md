@@ -184,21 +184,25 @@ These transfer to other LLM-powered services (test triage, log analysis, documen
 
 ## Configuration
 
-`.nitpick.yaml` at repo root (see [`.nitpick.yaml.example`](.nitpick.yaml.example)):
+`.nitpick.yaml` at repo root (see [`.nitpick.yaml.example`](.nitpick.yaml.example) for the full annotated example):
 
 ```yaml
 provider: anthropic
-model: claude-haiku-4-5         # or claude-sonnet-4-6
+model: claude-haiku-4-5           # or claude-sonnet-4-6
 review:
-  severity_threshold: useful    # nit | useful | critical
-  ignore_paths:
-    - "vendor/**"
-    - "**/*.lock"
-  categories_enabled:
-    - correctness
-    - security
-    - perf
+  severity_threshold: useful      # nit | useful | critical
+  ignore_paths: ["vendor/**", "**/*.lock"]
+  context_notes: |
+    Language conventions:
+      - GDScript: `class_name` is repo-globally resolved.
+        Do NOT flag missing imports for repo-local classes.
+      - Test framework is GdUnit4 — use before_test/after_test,
+        not try/finally (which GDScript doesn't have).
+    Things we don't want flagged here:
+      - "Add error handling" on signal handlers that intentionally swallow.
 ```
+
+The `context_notes` field is the key per-repo lever. nitpick fetches `.nitpick.yaml` at the PR head SHA and injects `context_notes` into the reviewer's system prompt as a cached block — treat it as authoritative repo-specific guidance that overrides the bot's defaults. Use it for language conventions (GDScript `class_name`, Rails autoload, Python namespace packages), test-framework specifics, and patterns the team has explicitly opted out of having flagged.
 
 For server-mode env vars (App ID, private key, webhook secret), see [`.env.example`](.env.example) and [`DEPLOY.md`](DEPLOY.md).
 

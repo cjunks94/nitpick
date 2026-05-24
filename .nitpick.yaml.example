@@ -1,19 +1,41 @@
 # Drop this file as `.nitpick.yaml` at your repo root to override defaults.
+# All fields are optional. nitpick uses sensible defaults when the file or
+# any field is missing.
 
 provider: anthropic                       # stub | deepseek | anthropic
-model: claude-haiku-4-5-20251001          # used when provider=anthropic
+model: claude-haiku-4-5                   # used when provider=anthropic
 
 review:
-  severity_threshold: nit                 # nit | useful | critical — post anything >= this
+  severity_threshold: useful              # nit | useful | critical — post anything >= this
   ignore_paths:
     - "vendor/**"
     - "**/*.lock"
     - "**/*.svg"
     - "**/testdata/**"
   categories_enabled:
-    - bug
+    - correctness
     - security
     - perf
-    - idiom
-    - todo
-    - suppression
+
+  # Free-form notes injected into the reviewer's system prompt as a cached
+  # block. Tell the bot what's specific to THIS repo: language conventions,
+  # framework-specific patterns, things the team doesn't want flagged.
+  # Keep it short — bullets, not essays. Adding too much dilutes attention.
+  #
+  # When the bot has notes, it treats them as authoritative for this repo
+  # and overrides its general defaults.
+  context_notes: |
+    Language conventions:
+      - GDScript: `class_name X extends Y` declarations are repo-globally
+        resolved. Do NOT flag missing imports or "undefined reference"
+        findings for repo-local classes.
+      - Test framework is GdUnit4 — use `before_test`/`after_test` hooks
+        for cleanup. GDScript has no try/finally; don't suggest it.
+
+    Repo-specific patterns:
+      - SaveSystem.save_hub_world returns bool (true on success).
+      - All run-state mutations go through `state_changed` signals.
+
+    Things we don't want flagged here:
+      - "Consider using a constant" for deliberately inline magic numbers.
+      - "Add error handling" on signal handlers that intentionally swallow.
