@@ -8,12 +8,16 @@ Self-hosted AI code review for GitHub pull requests. Bring your own LLM key; own
 
 ## Why
 
-CodeRabbit charges ~$60/developer/month on team plans. For personal projects and small teams that's expensive insurance for findings most LLMs produce on cents of tokens. nitpick:
+Self-hosted agentic tooling is where developer infrastructure is heading — full control over the prompt, the model, what context flows in, and which repos see what data. nitpick is the smallest useful version of that thesis: a PR reviewer you run on your own infrastructure with your own LLM key.
 
-- One tool, two deployment shapes (Action or hosted GitHub App)
+It's also been an exercise in the engineering discipline this kind of project actually needs:
+
+- Designed to **complement** CodeRabbit (which is well worth its ~$30/dev/mo on team plans), not replace it — the system prompt explicitly skips style/formatting and targets repo-context findings (contract drift, unenforced security gates, perf concerns tied to data shape)
+- Eval harness with committed `REPORT.md` history — the tuning loop is the artifact, not vibes
 - Anthropic Haiku 4.5 default; escalate to Sonnet 4.6 per repo
-- Designed to **complement** CodeRabbit, not duplicate it — the system prompt explicitly skips style/formatting and targets repo-context findings (contract drift, unenforced security gates, perf concerns tied to data shape)
-- Eval harness with committed REPORT.md history — the tuning loop is the artifact, not vibes
+- One tool, two deployment shapes (Action or hosted GitHub App), shared core
+
+Cost is incidental, not the pitch — ~$0.007/PR on Haiku, ~$0.029 on Sonnet. The point is owning the pipeline.
 
 ## Measured quality
 
