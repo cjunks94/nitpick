@@ -2,7 +2,27 @@
 
 End-to-end guide to running `nitpick serve` as a hosted webhook receiver, then installing it as a GitHub App on selected repos. After this, every PR open / push in a covered repo triggers an automatic review.
 
-Three pieces: **GitHub App** (you create in GitHub UI), **Railway service** (you deploy from this repo), **App installation** (you tick boxes on which repos get reviewed).
+**Time**: ~30 minutes start-to-finish. **Cost**: Railway's hobby tier (~$5/mo) + your Anthropic spend (~$0.007/PR on Haiku, ~$0.029 on Sonnet). For a personal account with a few dozen PRs/month, total cost lands under $10/mo.
+
+**Four pieces**:
+1. **Prerequisites checklist** — what you need before starting
+2. **GitHub App** — you create in GitHub UI (~5 min)
+3. **Railway service** — you deploy from this repo (~10 min)
+4. **App installation** — you tick boxes on which repos get reviewed (~2 min)
+
+There's also a **local smoke-test path** at the bottom if you want to validate the whole flow before going to Railway.
+
+---
+
+## 0. Prerequisites
+
+Before you start, have these ready:
+
+- [ ] **Anthropic API key** — https://console.anthropic.com → Settings → API Keys. Add a payment method (~$5 minimum credit).
+- [ ] **Railway account** — https://railway.com → log in with GitHub. Free tier works for testing; the hobby plan ($5/mo) is recommended for production.
+- [ ] **GitHub admin access** on the account/org where you'll install the App. For personal repos, that's your own account.
+- [ ] **CLI tools installed**: `git`, `gh` (GitHub CLI), `railway` (Railway CLI — `npm i -g @railway/cli` or see https://docs.railway.com/guides/cli).
+- [ ] A way to generate a long random string for the webhook secret: `openssl rand -hex 32`.
 
 ---
 
@@ -116,13 +136,41 @@ The PR should now have a `nitpick` review comment with inline findings.
 
 ---
 
+## Optional: local smoke test before Railway
+
+If you'd rather validate the whole flow on your laptop before paying for hosting, use **smee.io** to forward GitHub webhooks to a local server. Takes 5 extra minutes; saves you debugging a broken deployment.
+
+```bash
+# 1. Get a free public smee.io URL — open in browser: https://smee.io/new
+#    It'll give you something like https://smee.io/abc123XYZ.
+
+# 2. In one terminal, forward smee → localhost
+npx smee-client --url https://smee.io/abc123XYZ --target http://localhost:8080/webhook
+
+# 3. In another terminal, start the server with the same env vars Railway will use
+export ANTHROPIC_API_KEY=sk-ant-...
+export GITHUB_APP_ID=123456
+export GITHUB_APP_PRIVATE_KEY="$(cat your-app.2026-05-24.private-key.pem)"
+export GITHUB_WEBHOOK_SECRET=...     # the openssl rand -hex 32 value from step 1
+./nitpick serve --port 8080
+```
+
+Set the GitHub App's webhook URL to the smee URL (`https://smee.io/abc123XYZ`). Open a PR in a repo the App is installed on. You should see logs in your local terminal.
+
+Once that works end-to-end, repeat steps 2–4 above (Railway deploy + point webhook at Railway URL + install on repos).
+
+---
+
 ## Troubleshooting
 
 | Symptom | Likely cause |
 |---|---|
 | Webhook ping never arrives | Wrong webhook URL (missing `/webhook`?), or service isn't reachable — try `curl /healthz` first. |
 | Logs show `signature mismatch` | `GITHUB_WEBHOOK_SECRET` env var differs from the App's webhook-secret field. Re-paste both. |
-| Logs show `installation token exchange: HTTP 401` | `GITHUB_APP_PRIVATE_KEY` is missing newlines or wrong key. Re-download from App settings and re-paste. |
+| Logs show `installation token exchange: HTTP 401` | `GITHUB_APP_PRIVATE_KEY` is missing newlines or wrong key. Re-download from App settings and re-paste — include the `-----BEGIN/END-----` lines. |
 | Review never posts but logs show `review complete (silent)` | The LLM returned no findings for this diff — that's a clean review, not a bug. Check with `--dry-run` locally if you expect findings. |
 | `HTTP 404` on `FetchDiff` | The App isn't installed on that repo, or the PR is in a fork the App doesn't have access to. |
 | `HTTP 422` on `PostReview` | The PR head moved between fetch and post (someone pushed again). The next webhook will fire — this is expected, not actionable. |
+| Railway build fails on `go: downloading ...` | Network blip during build; redeploy. If persistent, check Railway's status page. |
+| Webhook arrives but logs show `skip reason=user_type=Bot` | A non-human opened the PR (CodeRabbit, dependabot). nitpick skips bot accounts by default — adjust `SkipUserLogins` in `internal/server/webhook.go` if you want different behavior. |
+| Container restarts immediately after deploy | Almost always missing env var. Logs will say `missing required config`. Double-check all 4 required vars are set in Railway. |

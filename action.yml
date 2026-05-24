@@ -1,5 +1,5 @@
 name: 'nitpick'
-description: 'Self-hosted AI code review for pull requests. BYO Anthropic or DeepSeek key.'
+description: 'Self-hosted AI code review for pull requests. BYO Anthropic key. ~$0.007/PR on Haiku, ~$0.029 on Sonnet.'
 author: 'cjunks94'
 
 inputs:
@@ -14,7 +14,7 @@ inputs:
   provider:
     description: 'stub | deepseek | anthropic'
     required: false
-    default: 'stub'
+    default: 'anthropic'
   dry-run:
     description: 'Print findings to logs instead of posting to the PR'
     required: false
