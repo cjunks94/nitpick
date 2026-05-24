@@ -1,6 +1,6 @@
 # nitpick
 
-Self-hosted AI code review for GitHub pull requests. Bring your own Anthropic API key — pay ~$0.007 per PR (Haiku) or ~$0.029 (Sonnet) instead of a per-seat SaaS bill.
+Self-hosted AI code review for GitHub pull requests. Bring your own LLM key; own the pipeline end-to-end.
 
 **Status: v0.2.0** — production-ready webhook server (`nitpick serve`) for hosted GitHub App deployment, or per-repo GitHub Action. Eval harness with 20 labeled PRs and committed prompt-tuning history.
 

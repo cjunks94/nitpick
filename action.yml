@@ -1,5 +1,5 @@
 name: 'nitpick'
-description: 'Self-hosted AI code review for pull requests. BYO Anthropic key. ~$0.007/PR on Haiku, ~$0.029 on Sonnet.'
+description: 'Self-hosted AI code review for pull requests. BYO Anthropic key; own the pipeline. Complements CodeRabbit, does not replace it.'
 author: 'cjunks94'
 
 inputs:
