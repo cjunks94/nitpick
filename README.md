@@ -78,6 +78,106 @@ One install → many repos, webhook-driven. Deploy `nitpick serve` to Railway / 
 
 ---
 
+## Architecture
+
+Two deployment shapes (`review` and `serve`) share a single core: diff parser → prompt → LLM → defensive JSON parser → comment formatter. They differ only in **how the diff arrives** and **which credential authorizes the post**.
+
+### System overview
+
+```mermaid
+flowchart TB
+    GH[("GitHub<br/>PRs + webhooks")]
+
+    subgraph deploy ["Deployment surfaces"]
+        direction LR
+        CLI["nitpick review<br/>local CLI<br/>gh user auth"]
+        SRV["nitpick serve<br/>webhook server<br/>GitHub App install token"]
+    end
+
+    subgraph core ["Shared core"]
+        direction TB
+        DIFF["Diff Parser<br/>internal/diff<br/>tracks NewLineNum + DiffPosition"]
+        PROMPT["System Prompt<br/>internal/prompt<br/>cache_control: 1h TTL"]
+        PROV["Provider<br/>internal/provider<br/>Stub or Anthropic Haiku/Sonnet"]
+        PARSE["Defensive JSON Parser<br/>handles int / string / range / prose"]
+    end
+
+    subgraph eval ["Quality moat"]
+        CASES[("eval/cases/<br/>20 labeled PRs")]
+        RUNNER["eval Runner<br/>precision · recall · noise · cost"]
+        REPORT[("eval/REPORT.md<br/>git-versioned history")]
+    end
+
+    GH -->|PR event| SRV
+    GH -->|on-demand| CLI
+    CLI --> DIFF
+    SRV -->|HMAC verify<br/>return 202 fast<br/>then async goroutine| DIFF
+    DIFF --> PROV
+    PROMPT --> PROV
+    PROV --> PARSE
+    PARSE -->|inline review post| GH
+
+    CASES --> RUNNER
+    PROV -.->|scored by| RUNNER
+    RUNNER --> REPORT
+    REPORT -.->|tunes| PROMPT
+```
+
+### Async webhook flow
+
+The LLM review takes 5-30s. GitHub's webhook delivery times out at ~10s. So `serve` validates + acknowledges within ~10ms and does the actual review in a goroutine.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant GH as GitHub
+    participant SRV as nitpick serve
+    participant LLM as Anthropic API
+
+    GH->>SRV: POST /webhook (X-Hub-Signature-256)
+    SRV->>SRV: verify HMAC<br/>parse event<br/>apply skip rules
+    SRV-->>GH: 202 Accepted (~10ms)
+    Note over SRV: goroutine takes over<br/>(req context decoupled)
+    SRV->>GH: GET /repos/{repo}/pulls/{n}<br/>Accept: application/vnd.github.diff
+    GH-->>SRV: unified diff
+    SRV->>LLM: messages.create<br/>(cached system + diff)
+    LLM-->>SRV: findings JSON
+    SRV->>GH: POST /repos/{repo}/pulls/{n}/reviews
+    GH-->>SRV: 201 Created
+```
+
+### Architectural decisions and trade-offs
+
+| Decision | Alternative considered | Why we chose this |
+|---|---|---|
+| Stub provider stays forever | Delete once Anthropic ships | It's the **eval floor** — every LLM run must beat it on F1 to justify the tokens |
+| Single prompt for both models | Per-model variants | A/B'd 3v3: looser Sonnet prompt got dominated. Measure before splitting |
+| Async webhook handler | Synchronous response | GitHub timeout ~10s vs LLM review 5-30s. Required, not optional |
+| In-memory dedup with 1h TTL | Postgres-backed dedup | Stateless deploy, restart loses ≤1h. Add DB when duplicates become a real problem |
+| `gh` CLI (local) + HTTP (server) | Unify on HTTP everywhere | Different auth models (user PAT vs App installation token); body shape shared via `BuildReviewBody` |
+| Per-PR error isolation | Abort sweep on first error | A $0.40 eval sweep lost to a single malformed JSON is unacceptable. Log + record zero findings + continue |
+| HMAC sig as the only auth | Add bearer / basic on top | Industry-standard webhook auth. Adding more breaks the integration |
+| Prompt in its own package, versioned via constant | Inline string in provider | Prompt diffs in `git log` are clean and pair naturally with `REPORT.md` commits |
+| `flexInt` accepts int / string / range | Strict int per JSON schema | Sonnet emitted line numbers in every shape; tightening back loses real eval data |
+| SIGTERM graceful shutdown with 30s grace | Hard kill on signal | Railway redeploys SIGTERM; without grace every redeploy loses in-flight reviews |
+
+### Patterns worth noting
+
+These transfer to other LLM-powered services (test triage, log analysis, document QA — any system that calls an LLM in production):
+
+- **Stub as the deterministic floor.** Before the LLM, what's the regex / heuristic baseline? Score against it. If the LLM doesn't beat the stub on F1, you're paying for nothing.
+- **Eval as committed code.** A labeled set + a runner + a `REPORT.md` whose git log captures every tuning iteration. Beats screenshots in Notion.
+- **Measure precision and recall, not just accuracy.** For most LLM tasks, false-positives kill reader trust faster than false-negatives kill recall. Tune for the one that matters in your domain.
+- **Per-item error isolation in batch jobs.** One bad LLM response should log + skip + continue, never abort. The economics demand it.
+- **Defensive output parsing.** Whatever your JSON schema says, the model will emit something it doesn't. Build the parser to absorb known drift (line-as-string, line-as-range, prose-before-JSON) rather than fighting it.
+- **HMAC for webhook auth.** Stripe, GitHub, Slack — they all do this. Don't bolt extra auth on top of webhooks; bolt it on admin endpoints instead.
+- **Async accept-now-work-later for any LLM webhook.** Return 202 fast, decouple the request context, work in a goroutine. Otherwise you'll get retries.
+- **Two transports, one body builder.** When you have multiple deployment shapes (CLI + server), share the data construction; vary only the transport.
+- **Prompts are model-specific in theory, model-agnostic in practice.** Keep the dispatcher seam (`prompt.For(modelID)`) for future use, but resist the urge to split until A/B data demands it.
+- **Cost ceilings are a feature.** A `MaxLinesPerPR` skip rule is the difference between $0.10/month and an accidental $50.
+
+---
+
 ## Configuration
 
 `.nitpick.yaml` at repo root (see [`.nitpick.yaml.example`](.nitpick.yaml.example)):
@@ -159,15 +259,6 @@ Point your GitHub App's webhook URL at the smee channel; open a PR; watch logs.
 | `DEPLOY.md` | Step-by-step GitHub App + Railway deployment guide |
 | `HANDOFF.md` | What's shipped, what's tried-and-reverted, what's next |
 | `.env.example` | Required env vars for `nitpick serve` |
-
-## Design notes
-
-- **The stub provider is permanent.** It's the eval floor — every LLM provider must beat it on F1 or it's not worth the tokens.
-- **Eval is committed code.** `eval/REPORT.md` belongs in git; each commit captures one tuning data point. Don't squash.
-- **The diff parser tracks both `NewLineNum` and `DiffPosition`** — modern GitHub `line` API plus legacy `position` fallback for edge cases.
-- **Prompt caching is wired but not load-bearing yet** — Haiku's 4K-token minimum cacheable prefix isn't reached by the current static system prompt. Larger prompts in future iterations will benefit.
-- **`gh` CLI for the local path, raw HTTP for serve.** Local `nitpick review` shells to `gh` (piggybacks on user auth). `nitpick serve` uses installation tokens via HTTP because containers don't have `gh` configured. Body construction is shared via `BuildReviewBody`.
-- **Per-PR error isolation in eval + serve.** One bad LLM response logs + continues; never crashes the sweep or the server.
 
 ## Roadmap
 
