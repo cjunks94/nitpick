@@ -36,9 +36,36 @@ func BuildReviewBody(comments []provider.Comment) ([]byte, error) {
 	}
 	return json.Marshal(map[string]any{
 		"event":    "COMMENT",
-		"body":     fmt.Sprintf("nitpick — %d finding(s)", len(comments)),
+		"body":     renderReviewSummary(len(comments)),
 		"comments": apiComments,
 	})
+}
+
+// renderReviewSummary builds the top-level review body shown above the inline
+// comments on GitHub. ASCII-FAQ styling deliberate: monospace code block reads
+// as a single visual unit and doesn't fight GitHub's markdown formatting.
+func renderReviewSummary(n int) string {
+	plural := "s"
+	if n == 1 {
+		plural = ""
+	}
+	return fmt.Sprintf("```\n"+
+		"============================================================\n"+
+		"  nitpick review — %d finding%s\n"+
+		"============================================================\n"+
+		"\n"+
+		"  SEVERITY\n"+
+		"    [CRITICAL]  real bug / security — would break production\n"+
+		"    [USEFUL]    real idiom / perf / maintainability worth fixing\n"+
+		"    [NIT]       taste / style — usually safe to ignore\n"+
+		"\n"+
+		"  SCOPE       complements CodeRabbit; targets contract drift,\n"+
+		"              unenforced security gates, perf concerns tied to\n"+
+		"              this repo's data shape. Skips style/formatting.\n"+
+		"\n"+
+		"  SOURCE      github.com/cjunks94/nitpick\n"+
+		"============================================================\n"+
+		"```", n, plural)
 }
 
 // PostReview posts a single PR review with inline comments via `gh api`.
@@ -98,19 +125,23 @@ func PrintComments(w io.Writer, comments []provider.Comment, costUSD float64) er
 	return nil
 }
 
+// renderBody is the per-finding inline comment body. Short header line with
+// severity + category in ASCII brackets, then the LLM-produced explanation,
+// then a plain-text signature. No emoji; no markdown bold; nothing that
+// fights with the source-code context the comment is anchored to.
 func renderBody(c provider.Comment) string {
 	var sev string
 	switch c.Severity {
 	case provider.SeverityCritical:
-		sev = "**[critical]**"
+		sev = "CRITICAL"
 	case provider.SeverityUseful:
-		sev = "**[useful]**"
+		sev = "USEFUL"
 	default:
-		sev = "**[nit]**"
+		sev = "NIT"
 	}
 	cat := ""
 	if c.Category != "" {
-		cat = fmt.Sprintf(" `%s`", c.Category)
+		cat = " · " + c.Category
 	}
-	return fmt.Sprintf("%s%s %s\n\n<sub>posted by nitpick</sub>", sev, cat, c.Body)
+	return fmt.Sprintf("`[%s%s]`\n\n%s\n\n`— nitpick`", sev, cat, c.Body)
 }
