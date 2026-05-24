@@ -56,7 +56,7 @@ func (a Anthropic) Name() string { return "anthropic-" + string(a.model) }
 func (a Anthropic) Review(ctx context.Context, req ReviewRequest) (ReviewResult, error) {
 	systemBlocks := []anthropic.TextBlockParam{
 		{
-			Text: prompt.System,
+			Text: prompt.For(string(a.model)),
 			CacheControl: anthropic.CacheControlEphemeralParam{
 				TTL: anthropic.CacheControlEphemeralTTLTTL1h,
 			},
