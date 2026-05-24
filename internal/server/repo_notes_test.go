@@ -34,11 +34,7 @@ review:
 	defer srv.Close()
 	client := &ghc.HTTPClient{BaseURL: srv.URL, Token: "test", HTTPClient: srv.Client()}
 
-	pre := &pullRequestEvent{}
-	pre.Repository.FullName = "owner/repo"
-	pre.PullRequest.Head.SHA = "abc"
-
-	got := fetchRepoNotes(context.Background(), silentLogger(), client, pre)
+	got := fetchRepoNotes(context.Background(), silentLogger(), client, "owner/repo", "abc")
 	if len(got) == 0 {
 		t.Fatal("expected notes, got nil")
 	}
@@ -56,11 +52,7 @@ func TestFetchRepoNotes_No404IsSilent(t *testing.T) {
 	defer srv.Close()
 	client := &ghc.HTTPClient{BaseURL: srv.URL, Token: "test", HTTPClient: srv.Client()}
 
-	pre := &pullRequestEvent{}
-	pre.Repository.FullName = "owner/repo"
-	pre.PullRequest.Head.SHA = "abc"
-
-	got := fetchRepoNotes(context.Background(), silentLogger(), client, pre)
+	got := fetchRepoNotes(context.Background(), silentLogger(), client, "owner/repo", "abc")
 	if got != nil {
 		t.Errorf("expected nil on 404, got: %s", got)
 	}
@@ -77,11 +69,7 @@ review:
 	defer srv.Close()
 	client := &ghc.HTTPClient{BaseURL: srv.URL, Token: "test", HTTPClient: srv.Client()}
 
-	pre := &pullRequestEvent{}
-	pre.Repository.FullName = "owner/repo"
-	pre.PullRequest.Head.SHA = "abc"
-
-	got := fetchRepoNotes(context.Background(), silentLogger(), client, pre)
+	got := fetchRepoNotes(context.Background(), silentLogger(), client, "owner/repo", "abc")
 	if got != nil {
 		t.Errorf("expected nil when context_notes is empty, got: %s", got)
 	}
@@ -92,11 +80,7 @@ func TestFetchRepoNotes_MalformedYamlIsGraceful(t *testing.T) {
 	defer srv.Close()
 	client := &ghc.HTTPClient{BaseURL: srv.URL, Token: "test", HTTPClient: srv.Client()}
 
-	pre := &pullRequestEvent{}
-	pre.Repository.FullName = "owner/repo"
-	pre.PullRequest.Head.SHA = "abc"
-
-	got := fetchRepoNotes(context.Background(), silentLogger(), client, pre)
+	got := fetchRepoNotes(context.Background(), silentLogger(), client, "owner/repo", "abc")
 	if got != nil {
 		t.Errorf("malformed yaml should be skipped, got: %s", got)
 	}

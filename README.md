@@ -82,6 +82,13 @@ One install → many repos, webhook-driven. Deploy `nitpick serve` to Railway / 
 
 ---
 
+## Triggers
+
+By default, nitpick reviews on PR `opened` / `synchronize` (push) / `reopened` / `ready_for_review`. To manually re-run on demand:
+
+- Comment **`/nitpick`** anywhere in any PR comment (case-insensitive substring match). Bypasses the head-SHA dedup so you get a fresh review even if no code changed since the last one. Useful for re-running after editing `.nitpick.yaml`, or to confirm a previously-silent review wasn't a bug.
+- Requires the GitHub App to be subscribed to the **Issue comment** event (see [`DEPLOY.md`](DEPLOY.md)).
+
 ## Architecture
 
 Two deployment shapes (`review` and `serve`) share a single core: diff parser → prompt → LLM → defensive JSON parser → comment formatter. They differ only in **how the diff arrives** and **which credential authorizes the post**.

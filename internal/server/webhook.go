@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -23,10 +24,10 @@ import (
 type pullRequestEvent struct {
 	Action      string `json:"action"`
 	PullRequest struct {
-		Number    int    `json:"number"`
-		Draft     bool   `json:"draft"`
-		Additions int    `json:"additions"`
-		Deletions int    `json:"deletions"`
+		Number    int  `json:"number"`
+		Draft     bool `json:"draft"`
+		Additions int  `json:"additions"`
+		Deletions int  `json:"deletions"`
 		User      struct {
 			Login string `json:"login"`
 			Type  string `json:"type"`
@@ -42,6 +43,49 @@ type pullRequestEvent struct {
 		ID int64 `json:"id"`
 	} `json:"installation"`
 }
+
+// issueCommentEvent fires on every comment created/edited/deleted on issues
+// AND PRs (GitHub's API treats them as the same resource at this level).
+// We use it as the trigger for /nitpick re-reviews — a developer types the
+// magic phrase in any PR comment and the bot kicks off a fresh review.
+type issueCommentEvent struct {
+	Action  string `json:"action"`
+	Comment struct {
+		Body string `json:"body"`
+		User struct {
+			Login string `json:"login"`
+			Type  string `json:"type"`
+		} `json:"user"`
+	} `json:"comment"`
+	Issue struct {
+		Number      int  `json:"number"`
+		PullRequest *struct {
+			URL string `json:"url"`
+		} `json:"pull_request"` // non-nil iff this comment is on a PR (not an issue)
+	} `json:"issue"`
+	Repository struct {
+		FullName string `json:"full_name"`
+	} `json:"repository"`
+	Installation struct {
+		ID int64 `json:"id"`
+	} `json:"installation"`
+}
+
+// recoverPanic is a goroutine guard. A panic inside an async review or
+// comment-trigger handler shouldn't crash the whole server — log + move on.
+// Doubles as test resilience: tests that exercise the routing logic don't
+// need a real TokenSource/Provider just to verify the synchronous parts.
+func recoverPanic(log *slog.Logger, where string) {
+	if r := recover(); r != nil {
+		log.Error("panic in "+where, "recover", fmt.Sprintf("%v", r))
+	}
+}
+
+// triggerPhrase is what users type to manually re-trigger a review.
+// Case-insensitive substring match — "/nitpick", "/nitpick review",
+// "/nitpick please" all work. We don't enforce position (start-of-line vs
+// inline) — users will find the easiest variant and stick with it.
+const triggerPhrase = "/nitpick"
 
 // Handler owns the dependencies the webhook handler needs to do its work.
 // Constructed once at server startup and shared across requests.
@@ -103,6 +147,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"ok":true}`))
 		return
 	}
+	if event == "issue_comment" {
+		h.handleIssueComment(w, log, body)
+		return
+	}
 	if event != "pull_request" {
 		// Ack other event types but do nothing — keeps GitHub from retrying.
 		w.WriteHeader(http.StatusAccepted)
@@ -133,7 +181,114 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusAccepted)
 	_, _ = w.Write([]byte(`{"ok":true,"async":true}`))
 
-	go h.review(context.Background(), log, &pre)
+	go h.reviewPR(context.Background(), log,
+		pre.Repository.FullName,
+		pre.PullRequest.Number,
+		pre.PullRequest.Head.SHA,
+		pre.Installation.ID)
+}
+
+// handleIssueComment routes issue_comment events. Filters: must be created
+// (not edited/deleted), must be on a PR (not an issue), must not be from a
+// Bot (avoid loops), must contain the trigger phrase. When all match, fetches
+// the PR's current state via the API and dispatches reviewPR — bypassing
+// dedup since the user is explicitly asking for a fresh review.
+func (h *Handler) handleIssueComment(w http.ResponseWriter, log *slog.Logger, body []byte) {
+	var ev issueCommentEvent
+	if err := json.Unmarshal(body, &ev); err != nil {
+		log.Warn("parse issue_comment event", "err", err)
+		http.Error(w, "bad json", http.StatusBadRequest)
+		return
+	}
+	if ev.Action != "created" {
+		w.WriteHeader(http.StatusAccepted)
+		return
+	}
+	if ev.Issue.PullRequest == nil {
+		// Comment is on an issue, not a PR. Ignore.
+		w.WriteHeader(http.StatusAccepted)
+		return
+	}
+	if ev.Comment.User.Type == "Bot" {
+		// Avoid loops — never trigger off our own (or any other bot's) comment.
+		w.WriteHeader(http.StatusAccepted)
+		return
+	}
+	if !strings.Contains(strings.ToLower(ev.Comment.Body), triggerPhrase) {
+		// Comment doesn't ask for a review. Most issue_comment events fall here.
+		w.WriteHeader(http.StatusAccepted)
+		return
+	}
+	if ev.Installation.ID == 0 {
+		log.Warn("issue_comment with no installation id; ignoring")
+		w.WriteHeader(http.StatusAccepted)
+		return
+	}
+
+	log = log.With(
+		"repo", ev.Repository.FullName,
+		"pr", ev.Issue.Number,
+		"trigger", "comment",
+		"user", ev.Comment.User.Login,
+	)
+	log.Info("comment trigger fired", "phrase", triggerPhrase)
+
+	// Return fast — fetch + review happens in a goroutine. Dedup is
+	// intentionally bypassed: the user asked, so we re-review even if we
+	// already reviewed this head SHA.
+	w.WriteHeader(http.StatusAccepted)
+	_, _ = w.Write([]byte(`{"ok":true,"async":true,"trigger":"comment"}`))
+
+	go h.handleCommentTriggerAsync(context.Background(), log, ev.Repository.FullName, ev.Issue.Number, ev.Installation.ID)
+}
+
+// handleCommentTriggerAsync is the goroutine body for comment-triggered
+// reviews. Mints an installation token, fetches the current PR state (the
+// comment payload doesn't include the head SHA), runs the same skip rules
+// minus dedup, then dispatches reviewPR.
+func (h *Handler) handleCommentTriggerAsync(ctx context.Context, log *slog.Logger, repo string, prNum int, installID int64) {
+	defer recoverPanic(log, "comment-trigger goroutine")
+	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	defer cancel()
+
+	token, err := h.TokenSource.Token(ctx, installID)
+	if err != nil {
+		log.Error("mint installation token (comment trigger)", "err", err)
+		return
+	}
+	client := ghc.NewHTTPClient(token)
+
+	pr, err := client.FetchPR(ctx, repo, prNum)
+	if err != nil {
+		log.Error("fetch PR for comment trigger", "err", err)
+		return
+	}
+	log = log.With("head_sha", pr.HeadSHA)
+
+	// Apply the same skip rules as the pull_request handler, MINUS dedup.
+	// Comment trigger respects draft / bot / size guards (they're cost
+	// controls, not idempotency) but bypasses the head-SHA dedup because
+	// the user is asking explicitly.
+	if pr.Draft {
+		log.Info("skip", "reason", "draft")
+		return
+	}
+	for _, login := range h.SkipUserLogins {
+		if pr.UserLogin == login {
+			log.Info("skip", "reason", "user="+login)
+			return
+		}
+	}
+	if pr.UserType == "Bot" && pr.UserLogin != "" {
+		log.Info("skip", "reason", "user_type=Bot")
+		return
+	}
+	if total := pr.Additions + pr.Deletions; total > h.MaxLinesPerPR {
+		log.Info("skip", "reason", fmt.Sprintf("size=%d>limit=%d", total, h.MaxLinesPerPR))
+		return
+	}
+
+	h.reviewPR(ctx, log, repo, prNum, pr.HeadSHA, installID)
 }
 
 // shouldSkip returns true if the PR shouldn't be reviewed. Reasons are
@@ -181,23 +336,29 @@ func (h *Handler) shouldSkip(pre *pullRequestEvent) (bool, string) {
 	return false, ""
 }
 
-// review runs the actual LLM review and posts the result. Errors are logged
+// reviewPR runs the actual LLM review and posts the result. Errors are logged
 // rather than propagated — there's no caller waiting on us. A 30s ceiling
 // guards against runaway calls; the Anthropic SDK's internal timeout is 30s
 // too, so this is a hard backstop.
-func (h *Handler) review(ctx context.Context, log *slog.Logger, pre *pullRequestEvent) {
+//
+// Takes its inputs as plain params (not a pullRequestEvent) so both the
+// pull_request webhook and the /nitpick comment trigger can call it with the
+// same signature. Dedup happens in the caller, not here — comment triggers
+// bypass dedup because the user is explicitly asking for a fresh review.
+func (h *Handler) reviewPR(ctx context.Context, log *slog.Logger, repo string, prNum int, headSHA string, installID int64) {
+	defer recoverPanic(log, "review goroutine")
 	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
 
 	start := time.Now()
-	token, err := h.TokenSource.Token(ctx, pre.Installation.ID)
+	token, err := h.TokenSource.Token(ctx, installID)
 	if err != nil {
 		log.Error("mint installation token", "err", err)
 		return
 	}
 	client := ghc.NewHTTPClient(token)
 
-	raw, err := client.FetchDiff(ctx, pre.Repository.FullName, pre.PullRequest.Number)
+	raw, err := client.FetchDiff(ctx, repo, prNum)
 	if err != nil {
 		log.Error("fetch diff", "err", err)
 		return
@@ -208,8 +369,8 @@ func (h *Handler) review(ctx context.Context, log *slog.Logger, pre *pullRequest
 		return
 	}
 
-	contextFiles := fetchContextFiles(ctx, log, client, pre, hunks)
-	repoNotes := fetchRepoNotes(ctx, log, client, pre)
+	contextFiles := fetchContextFiles(ctx, log, client, repo, headSHA, hunks)
+	repoNotes := fetchRepoNotes(ctx, log, client, repo, headSHA)
 
 	res, err := h.Provider.Review(ctx, provider.ReviewRequest{
 		Hunks:          hunks,
@@ -228,7 +389,7 @@ func (h *Handler) review(ctx context.Context, log *slog.Logger, pre *pullRequest
 			"cost_usd", res.CostUSD)
 		return
 	}
-	if err := client.PostReview(ctx, pre.Repository.FullName, pre.PullRequest.Number, res.Comments); err != nil {
+	if err := client.PostReview(ctx, repo, prNum, res.Comments); err != nil {
 		// 422 = the diff moved out from under us between FetchDiff and
 		// PostReview (head pushed). Don't retry — the new push will fire
 		// another webhook.
@@ -271,8 +432,8 @@ const (
 // the config you're proposing." A human still sees the .nitpick.yaml diff
 // in normal PR review, so this isn't a security hole — a malicious notes
 // edit would be visible.
-func fetchRepoNotes(ctx context.Context, log *slog.Logger, client *ghc.HTTPClient, pre *pullRequestEvent) []byte {
-	content, err := client.FetchFile(ctx, pre.Repository.FullName, pre.PullRequest.Head.SHA, repoConfigPath)
+func fetchRepoNotes(ctx context.Context, log *slog.Logger, client *ghc.HTTPClient, repo, sha string) []byte {
+	content, err := client.FetchFile(ctx, repo, sha, repoConfigPath)
 	if err != nil {
 		// Most common: repo has no .nitpick.yaml. Debug-level only.
 		log.Debug("no .nitpick.yaml", "err", err)
@@ -307,7 +468,7 @@ func fetchRepoNotes(ctx context.Context, log *slog.Logger, client *ghc.HTTPClien
 // avoid the "needs surrounding code" false-positive class. Returns nil on
 // any error — diff-only review is the graceful fallback and worse than
 // having context but better than crashing.
-func fetchContextFiles(ctx context.Context, log *slog.Logger, client *ghc.HTTPClient, pre *pullRequestEvent, hunks []diff.Hunk) []provider.ContextFile {
+func fetchContextFiles(ctx context.Context, log *slog.Logger, client *ghc.HTTPClient, repo, sha string, hunks []diff.Hunk) []provider.ContextFile {
 	seen := make(map[string]bool, len(hunks))
 	var paths []string
 	for _, h := range hunks {
@@ -329,7 +490,7 @@ func fetchContextFiles(ctx context.Context, log *slog.Logger, client *ghc.HTTPCl
 		totalBytes int
 	)
 	for _, p := range paths {
-		content, err := client.FetchFile(ctx, pre.Repository.FullName, pre.PullRequest.Head.SHA, p)
+		content, err := client.FetchFile(ctx, repo, sha, p)
 		if err != nil {
 			// Most common: new file that doesn't exist at base, or file
 			// deleted in the PR. Skip silently — the diff still works.

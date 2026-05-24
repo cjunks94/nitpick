@@ -57,12 +57,9 @@ func TestFetchContextFiles_HappyPath(t *testing.T) {
 	defer srv.Close()
 	client := &ghc.HTTPClient{BaseURL: srv.URL, Token: "test", HTTPClient: srv.Client()}
 
-	pre := &pullRequestEvent{}
-	pre.Repository.FullName = "owner/repo"
-	pre.PullRequest.Head.SHA = "abc123"
 	hunks := []diff.Hunk{{File: "a.go"}, {File: "b.go"}}
 
-	got := fetchContextFiles(context.Background(), silentLogger(), client, pre, hunks)
+	got := fetchContextFiles(context.Background(), silentLogger(), client, "owner/repo", "abc123", hunks)
 	if len(got) != 2 {
 		t.Fatalf("len(got) = %d, want 2", len(got))
 	}
@@ -81,12 +78,9 @@ func TestFetchContextFiles_DedupsRepeatedFile(t *testing.T) {
 	defer srv.Close()
 	client := &ghc.HTTPClient{BaseURL: srv.URL, Token: "test", HTTPClient: srv.Client()}
 
-	pre := &pullRequestEvent{}
-	pre.Repository.FullName = "owner/repo"
-	pre.PullRequest.Head.SHA = "abc"
 	hunks := []diff.Hunk{{File: "a.go"}, {File: "a.go"}, {File: "a.go"}}
 
-	got := fetchContextFiles(context.Background(), silentLogger(), client, pre, hunks)
+	got := fetchContextFiles(context.Background(), silentLogger(), client, "owner/repo", "abc", hunks)
 	if len(got) != 1 || calls != 1 {
 		t.Fatalf("got=%d files, calls=%d; want 1/1", len(got), calls)
 	}
@@ -101,12 +95,9 @@ func TestFetchContextFiles_SkipsOversizedFile(t *testing.T) {
 	defer srv.Close()
 	client := &ghc.HTTPClient{BaseURL: srv.URL, Token: "test", HTTPClient: srv.Client()}
 
-	pre := &pullRequestEvent{}
-	pre.Repository.FullName = "owner/repo"
-	pre.PullRequest.Head.SHA = "abc"
 	hunks := []diff.Hunk{{File: "big.go"}, {File: "small.go"}}
 
-	got := fetchContextFiles(context.Background(), silentLogger(), client, pre, hunks)
+	got := fetchContextFiles(context.Background(), silentLogger(), client, "owner/repo", "abc", hunks)
 	if len(got) != 1 || got[0].Path != "small.go" {
 		t.Fatalf("oversized file should be skipped; got=%+v", got)
 	}
@@ -124,11 +115,7 @@ func TestFetchContextFiles_CapsAtMaxFiles(t *testing.T) {
 	defer srv.Close()
 	client := &ghc.HTTPClient{BaseURL: srv.URL, Token: "test", HTTPClient: srv.Client()}
 
-	pre := &pullRequestEvent{}
-	pre.Repository.FullName = "owner/repo"
-	pre.PullRequest.Head.SHA = "abc"
-
-	got := fetchContextFiles(context.Background(), silentLogger(), client, pre, hunks)
+	got := fetchContextFiles(context.Background(), silentLogger(), client, "owner/repo", "abc", hunks)
 	if len(got) != maxContextFiles {
 		t.Fatalf("len(got) = %d, want %d", len(got), maxContextFiles)
 	}
@@ -139,12 +126,9 @@ func TestFetchContextFiles_GracefulOn404(t *testing.T) {
 	defer srv.Close()
 	client := &ghc.HTTPClient{BaseURL: srv.URL, Token: "test", HTTPClient: srv.Client()}
 
-	pre := &pullRequestEvent{}
-	pre.Repository.FullName = "owner/repo"
-	pre.PullRequest.Head.SHA = "abc"
 	hunks := []diff.Hunk{{File: "missing.go"}, {File: "exists.go"}}
 
-	got := fetchContextFiles(context.Background(), silentLogger(), client, pre, hunks)
+	got := fetchContextFiles(context.Background(), silentLogger(), client, "owner/repo", "abc", hunks)
 	if len(got) != 1 || got[0].Path != "exists.go" {
 		t.Fatalf("missing file should be skipped; got=%+v", got)
 	}

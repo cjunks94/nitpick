@@ -3,6 +3,7 @@ package ghc
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -30,6 +31,77 @@ func NewHTTPClient(token string) *HTTPClient {
 			Timeout: 30 * time.Second,
 		},
 	}
+}
+
+// PRDetails is the subset of the GitHub PR resource nitpick needs to decide
+// whether to review a PR triggered by something other than the pull_request
+// webhook (e.g. a /nitpick comment). All fields nitpick keys off live here;
+// extending requires updating both the struct and the JSON shape below.
+type PRDetails struct {
+	Number      int
+	HeadSHA     string
+	Draft       bool
+	Additions   int
+	Deletions   int
+	UserLogin   string
+	UserType    string // User | Bot
+	BaseRepo    string // owner/name
+}
+
+// FetchPR returns the current state of a PR. Used by triggers that don't
+// carry full PR data (issue_comment) — fetches the same fields the
+// pull_request webhook would have given us.
+func (c *HTTPClient) FetchPR(ctx context.Context, repo string, pr int) (PRDetails, error) {
+	url := fmt.Sprintf("%s/repos/%s/pulls/%d", c.BaseURL, repo, pr)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return PRDetails{}, err
+	}
+	req.Header.Set("Authorization", "token "+c.Token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return PRDetails{}, fmt.Errorf("fetch PR: %w", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return PRDetails{}, fmt.Errorf("fetch PR: HTTP %d: %s", resp.StatusCode, truncate(string(body), 300))
+	}
+
+	var raw struct {
+		Number    int  `json:"number"`
+		Draft     bool `json:"draft"`
+		Additions int  `json:"additions"`
+		Deletions int  `json:"deletions"`
+		Head      struct {
+			SHA string `json:"sha"`
+		} `json:"head"`
+		Base struct {
+			Repo struct {
+				FullName string `json:"full_name"`
+			} `json:"repo"`
+		} `json:"base"`
+		User struct {
+			Login string `json:"login"`
+			Type  string `json:"type"`
+		} `json:"user"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return PRDetails{}, fmt.Errorf("parse PR response: %w", err)
+	}
+	return PRDetails{
+		Number:    raw.Number,
+		HeadSHA:   raw.Head.SHA,
+		Draft:     raw.Draft,
+		Additions: raw.Additions,
+		Deletions: raw.Deletions,
+		UserLogin: raw.User.Login,
+		UserType:  raw.User.Type,
+		BaseRepo:  raw.Base.Repo.FullName,
+	}, nil
 }
 
 // FetchFile returns the raw contents of a file at a given commit SHA. Used
