@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/anthropics/anthropic-sdk-go"
@@ -11,6 +12,30 @@ import (
 	"github.com/cjunks94/nitpick/internal/diff"
 	"github.com/cjunks94/nitpick/internal/prompt"
 )
+
+// flexInt accepts JSON numbers OR strings convertible to int. Anthropic
+// models — especially Sonnet on a verbose prompt — occasionally emit line
+// numbers as strings ("80") despite the schema asking for int. Without this
+// the whole eval call errors and we lose the result.
+type flexInt int
+
+func (i *flexInt) UnmarshalJSON(data []byte) error {
+	var n int
+	if err := json.Unmarshal(data, &n); err == nil {
+		*i = flexInt(n)
+		return nil
+	}
+	var s string
+	if err := json.Unmarshal(data, &s); err != nil {
+		return fmt.Errorf("line: not int or string: %s", data)
+	}
+	v, err := strconv.Atoi(strings.TrimSpace(s))
+	if err != nil {
+		return fmt.Errorf("line %q: not coercible to int", s)
+	}
+	*i = flexInt(v)
+	return nil
+}
 
 // Anthropic is the production provider. Single-shot call per PR with the
 // static review prompt + repo CLAUDE.md cached as ephemeral 1h-TTL system
@@ -146,11 +171,11 @@ func parseFindings(text string) ([]Comment, error) {
 
 	var payload struct {
 		Findings []struct {
-			File     string `json:"file"`
-			Line     int    `json:"line"`
-			Severity string `json:"severity"`
-			Category string `json:"category"`
-			Body     string `json:"body"`
+			File     string  `json:"file"`
+			Line     flexInt `json:"line"`
+			Severity string  `json:"severity"`
+			Category string  `json:"category"`
+			Body     string  `json:"body"`
 		} `json:"findings"`
 	}
 	if err := json.Unmarshal([]byte(text[start:end+1]), &payload); err != nil {
@@ -165,7 +190,7 @@ func parseFindings(text string) ([]Comment, error) {
 		}
 		out = append(out, Comment{
 			File:     f.File,
-			Line:     f.Line,
+			Line:     int(f.Line),
 			Severity: sev,
 			Category: f.Category,
 			Body:     f.Body,

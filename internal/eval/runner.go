@@ -78,7 +78,12 @@ func Run(ctx context.Context, casesPath, outPath string, p provider.Provider, lo
 			RepoGuidelines: guidelines,
 		})
 		if err != nil {
-			return fmt.Errorf("review PR #%d: %w", c.PR, err)
+			// Log but continue — one bad LLM response shouldn't tank a 20-PR
+			// sweep that cost real money. The case gets recorded as zero
+			// findings, which counts as misses against its expected labels
+			// (honest accounting of the failure).
+			fmt.Fprintf(os.Stderr, "nitpick: PR #%d (%s) errored, recording zero findings: %v\n", c.PR, c.Repo, err)
+			res = provider.ReviewResult{}
 		}
 		results = append(results, score(c, res))
 	}
