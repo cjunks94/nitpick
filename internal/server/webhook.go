@@ -47,15 +47,13 @@ type pullRequestEvent struct {
 // issueCommentEvent fires on every comment created/edited/deleted on issues
 // AND PRs (GitHub's API treats them as the same resource at this level).
 // We use it as the trigger for /nitpick re-reviews — a developer types the
-// magic phrase in any PR comment and the bot kicks off a fresh review.
+// magic phrase in any top-level PR comment and the bot kicks off a fresh
+// review.
 type issueCommentEvent struct {
 	Action  string `json:"action"`
 	Comment struct {
 		Body string `json:"body"`
-		User struct {
-			Login string `json:"login"`
-			Type  string `json:"type"`
-		} `json:"user"`
+		User actor  `json:"user"`
 	} `json:"comment"`
 	Issue struct {
 		Number      int  `json:"number"`
@@ -63,12 +61,59 @@ type issueCommentEvent struct {
 			URL string `json:"url"`
 		} `json:"pull_request"` // non-nil iff this comment is on a PR (not an issue)
 	} `json:"issue"`
-	Repository struct {
-		FullName string `json:"full_name"`
-	} `json:"repository"`
-	Installation struct {
-		ID int64 `json:"id"`
-	} `json:"installation"`
+	Repository   repoRef      `json:"repository"`
+	Installation installation `json:"installation"`
+}
+
+// pullRequestReviewCommentEvent fires on INLINE replies in PR review threads
+// (the threaded conversations under each diff line). Distinct event type
+// from issue_comment despite being conceptually similar — different payload
+// shape: pull_request is present and includes the PR's current state, so
+// we don't need a FetchPR fallback to learn the PR number.
+type pullRequestReviewCommentEvent struct {
+	Action  string `json:"action"`
+	Comment struct {
+		Body string `json:"body"`
+		User actor  `json:"user"`
+	} `json:"comment"`
+	PullRequest struct {
+		Number int `json:"number"`
+	} `json:"pull_request"`
+	Repository   repoRef      `json:"repository"`
+	Installation installation `json:"installation"`
+}
+
+// pullRequestReviewEvent fires when a reviewer hits "Submit review" (action
+// = submitted) with a review body that may contain the trigger phrase.
+// State can be "approved", "changes_requested", or "commented" — we ignore
+// state and just look at body text. Also fires for edited/dismissed; we
+// only act on submitted (others would re-fire on the same body text).
+type pullRequestReviewEvent struct {
+	Action string `json:"action"`
+	Review struct {
+		Body string `json:"body"`
+		User actor  `json:"user"`
+	} `json:"review"`
+	PullRequest struct {
+		Number int `json:"number"`
+	} `json:"pull_request"`
+	Repository   repoRef      `json:"repository"`
+	Installation installation `json:"installation"`
+}
+
+// Shared payload subtypes — extracted to keep the event structs short and
+// the unmarshaling consistent across event types.
+type actor struct {
+	Login string `json:"login"`
+	Type  string `json:"type"`
+}
+
+type repoRef struct {
+	FullName string `json:"full_name"`
+}
+
+type installation struct {
+	ID int64 `json:"id"`
 }
 
 // recoverPanic is a goroutine guard. A panic inside an async review or
@@ -151,6 +196,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleIssueComment(w, log, body)
 		return
 	}
+	if event == "pull_request_review_comment" {
+		h.handlePullRequestReviewComment(w, log, body)
+		return
+	}
+	if event == "pull_request_review" {
+		h.handlePullRequestReview(w, log, body)
+		return
+	}
 	if event != "pull_request" {
 		// Ack other event types but do nothing — keeps GitHub from retrying.
 		w.WriteHeader(http.StatusAccepted)
@@ -188,11 +241,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		pre.Installation.ID)
 }
 
-// handleIssueComment routes issue_comment events. Filters: must be created
-// (not edited/deleted), must be on a PR (not an issue), must not be from a
-// Bot (avoid loops), must contain the trigger phrase. When all match, fetches
-// the PR's current state via the API and dispatches reviewPR — bypassing
-// dedup since the user is explicitly asking for a fresh review.
+// handleIssueComment routes top-level PR comments (issue_comment in GitHub's
+// schema). See dispatchCommentTrigger for the shared logic.
 func (h *Handler) handleIssueComment(w http.ResponseWriter, log *slog.Logger, body []byte) {
 	var ev issueCommentEvent
 	if err := json.Unmarshal(body, &ev); err != nil {
@@ -209,27 +259,102 @@ func (h *Handler) handleIssueComment(w http.ResponseWriter, log *slog.Logger, bo
 		w.WriteHeader(http.StatusAccepted)
 		return
 	}
-	if ev.Comment.User.Type == "Bot" {
-		// Avoid loops — never trigger off our own (or any other bot's) comment.
+	h.dispatchCommentTrigger(w, log, commentTrigger{
+		Source:    "comment",
+		Repo:      ev.Repository.FullName,
+		PRNum:     ev.Issue.Number,
+		InstallID: ev.Installation.ID,
+		Body:      ev.Comment.Body,
+		User:      ev.Comment.User,
+	})
+}
+
+// handlePullRequestReviewComment routes inline replies in PR review threads
+// (the threaded conversations under each diff line). Same trigger semantics
+// as top-level comments.
+func (h *Handler) handlePullRequestReviewComment(w http.ResponseWriter, log *slog.Logger, body []byte) {
+	var ev pullRequestReviewCommentEvent
+	if err := json.Unmarshal(body, &ev); err != nil {
+		log.Warn("parse pull_request_review_comment event", "err", err)
+		http.Error(w, "bad json", http.StatusBadRequest)
+		return
+	}
+	if ev.Action != "created" {
 		w.WriteHeader(http.StatusAccepted)
 		return
 	}
-	if !strings.Contains(strings.ToLower(ev.Comment.Body), triggerPhrase) {
-		// Comment doesn't ask for a review. Most issue_comment events fall here.
+	h.dispatchCommentTrigger(w, log, commentTrigger{
+		Source:    "inline-comment",
+		Repo:      ev.Repository.FullName,
+		PRNum:     ev.PullRequest.Number,
+		InstallID: ev.Installation.ID,
+		Body:      ev.Comment.Body,
+		User:      ev.Comment.User,
+	})
+}
+
+// handlePullRequestReview routes review submissions — the body the reviewer
+// types when hitting "Submit review". Only acts on action=submitted; edited
+// and dismissed would re-fire on the same body text.
+func (h *Handler) handlePullRequestReview(w http.ResponseWriter, log *slog.Logger, body []byte) {
+	var ev pullRequestReviewEvent
+	if err := json.Unmarshal(body, &ev); err != nil {
+		log.Warn("parse pull_request_review event", "err", err)
+		http.Error(w, "bad json", http.StatusBadRequest)
+		return
+	}
+	if ev.Action != "submitted" {
 		w.WriteHeader(http.StatusAccepted)
 		return
 	}
-	if ev.Installation.ID == 0 {
-		log.Warn("issue_comment with no installation id; ignoring")
+	h.dispatchCommentTrigger(w, log, commentTrigger{
+		Source:    "review-body",
+		Repo:      ev.Repository.FullName,
+		PRNum:     ev.PullRequest.Number,
+		InstallID: ev.Installation.ID,
+		Body:      ev.Review.Body,
+		User:      ev.Review.User,
+	})
+}
+
+// commentTrigger is the per-event payload that dispatchCommentTrigger needs.
+// Lets the three event handlers share filtering + dispatch without each one
+// duplicating the bot-skip / trigger-phrase / installation-id logic.
+type commentTrigger struct {
+	Source    string // one of: comment | inline-comment | review-body
+	Repo      string
+	PRNum     int
+	InstallID int64
+	Body      string
+	User      actor
+}
+
+// dispatchCommentTrigger is the shared filter+fire path for all three
+// comment-shaped events. Filters: must not be from a Bot (avoid loops),
+// must contain the trigger phrase, must have an installation ID. On match,
+// returns 202 fast and spawns the async review goroutine.
+func (h *Handler) dispatchCommentTrigger(w http.ResponseWriter, log *slog.Logger, t commentTrigger) {
+	if t.User.Type == "Bot" {
+		// Avoid loops — never trigger off our own (or any other bot's) text.
+		w.WriteHeader(http.StatusAccepted)
+		return
+	}
+	if !strings.Contains(strings.ToLower(t.Body), triggerPhrase) {
+		// Most comment events fall here — no trigger phrase.
+		w.WriteHeader(http.StatusAccepted)
+		return
+	}
+	if t.InstallID == 0 {
+		log.Warn(t.Source+" with no installation id; ignoring")
 		w.WriteHeader(http.StatusAccepted)
 		return
 	}
 
 	log = log.With(
-		"repo", ev.Repository.FullName,
-		"pr", ev.Issue.Number,
-		"trigger", "comment",
-		"user", ev.Comment.User.Login,
+		"repo", t.Repo,
+		"pr", t.PRNum,
+		"trigger", t.Source,
+		"user", t.User.Login,
 	)
 	log.Info("comment trigger fired", "phrase", triggerPhrase)
 
@@ -237,9 +362,9 @@ func (h *Handler) handleIssueComment(w http.ResponseWriter, log *slog.Logger, bo
 	// intentionally bypassed: the user asked, so we re-review even if we
 	// already reviewed this head SHA.
 	w.WriteHeader(http.StatusAccepted)
-	_, _ = w.Write([]byte(`{"ok":true,"async":true,"trigger":"comment"}`))
+	_, _ = w.Write([]byte(`{"ok":true,"async":true,"trigger":"` + t.Source + `"}`))
 
-	go h.handleCommentTriggerAsync(context.Background(), log, ev.Repository.FullName, ev.Issue.Number, ev.Installation.ID)
+	go h.handleCommentTriggerAsync(context.Background(), log, t.Repo, t.PRNum, t.InstallID)
 }
 
 // handleCommentTriggerAsync is the goroutine body for comment-triggered

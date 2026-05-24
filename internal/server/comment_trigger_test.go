@@ -144,6 +144,100 @@ func TestIssueComment_SkipsNonCreatedActions(t *testing.T) {
 	}
 }
 
+// Inline review-comment events — separate event type from issue_comment
+// despite the similar shape. Same trigger semantics.
+func TestPullRequestReviewComment_TriggerFires(t *testing.T) {
+	secret := "topsecret"
+	h := minimalHandler(secret)
+
+	payload := []byte(`{
+		"action": "created",
+		"comment": {
+			"body": "/nitpick review this hunk please",
+			"user": {"login": "alice", "type": "User"}
+		},
+		"pull_request": {"number": 7},
+		"repository": {"full_name": "owner/repo"},
+		"installation": {"id": 12345}
+	}`)
+	req := signedRequest(t, secret, "pull_request_review_comment", payload)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if !strings.Contains(rec.Body.String(), `"trigger":"inline-comment"`) {
+		t.Errorf("expected inline-comment trigger to fire; body: %s", rec.Body.String())
+	}
+}
+
+func TestPullRequestReviewComment_SkipsEditedAction(t *testing.T) {
+	secret := "topsecret"
+	h := minimalHandler(secret)
+
+	payload := []byte(`{
+		"action": "edited",
+		"comment": {"body": "/nitpick", "user": {"login": "alice", "type": "User"}},
+		"pull_request": {"number": 7},
+		"repository": {"full_name": "owner/repo"},
+		"installation": {"id": 12345}
+	}`)
+	req := signedRequest(t, secret, "pull_request_review_comment", payload)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if strings.Contains(rec.Body.String(), `"trigger":`) {
+		t.Error("edited inline comment should not fire trigger")
+	}
+}
+
+// Review-body events — fires when a reviewer hits "Submit review" with text
+// in the body. State (approved / changes_requested / commented) is ignored
+// — only body content matters.
+func TestPullRequestReview_TriggerFires(t *testing.T) {
+	secret := "topsecret"
+	h := minimalHandler(secret)
+
+	payload := []byte(`{
+		"action": "submitted",
+		"review": {
+			"body": "Looks good overall, but /nitpick should double-check the test coverage.",
+			"user": {"login": "alice", "type": "User"}
+		},
+		"pull_request": {"number": 99},
+		"repository": {"full_name": "owner/repo"},
+		"installation": {"id": 12345}
+	}`)
+	req := signedRequest(t, secret, "pull_request_review", payload)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if !strings.Contains(rec.Body.String(), `"trigger":"review-body"`) {
+		t.Errorf("expected review-body trigger to fire; body: %s", rec.Body.String())
+	}
+}
+
+func TestPullRequestReview_SkipsDismissedAndEdited(t *testing.T) {
+	secret := "topsecret"
+	h := minimalHandler(secret)
+
+	for _, action := range []string{"edited", "dismissed"} {
+		t.Run(action, func(t *testing.T) {
+			payload := []byte(`{
+				"action": "` + action + `",
+				"review": {"body": "/nitpick", "user": {"login": "alice", "type": "User"}},
+				"pull_request": {"number": 99},
+				"repository": {"full_name": "owner/repo"},
+				"installation": {"id": 12345}
+			}`)
+			req := signedRequest(t, secret, "pull_request_review", payload)
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if strings.Contains(rec.Body.String(), `"trigger":`) {
+				t.Errorf("%s action should not fire", action)
+			}
+		})
+	}
+}
+
 // Sanity check that the handler returns fast and doesn't block on the async
 // goroutine (which would try to mint tokens against nil TokenSource).
 func TestIssueComment_ReturnsFastWithoutBlocking(t *testing.T) {

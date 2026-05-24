@@ -40,7 +40,7 @@ Settings → Developer settings → GitHub Apps → **New GitHub App**.
 | → Contents | **Read-only** (so the App can read the diff) |
 | → Pull requests | **Read and write** (so the App can post reviews) |
 | → Metadata | Read-only (auto-set) |
-| **Subscribe to events** | ✓ Pull request · ✓ Issue comment |
+| **Subscribe to events** | ✓ Pull request · ✓ Issue comment · ✓ Pull request review · ✓ Pull request review comment |
 | Where can this be installed? | Only on this account |
 
 Click **Create GitHub App**. On the next page:
@@ -126,14 +126,23 @@ The PR should now have a `nitpick` review comment with inline findings.
 
 ## Manually re-triggering a review
 
-Type **`/nitpick`** (case-insensitive substring) in any PR comment and nitpick will run a fresh review. Useful when:
+Type **`/nitpick`** (case-insensitive substring) anywhere a human can type text on a PR and nitpick will run a fresh review:
+
+| Where you can put `/nitpick` | GitHub event nitpick listens to |
+|---|---|
+| Top-level PR comment | `issue_comment` |
+| Inline reply on a review thread (under a specific line of code) | `pull_request_review_comment` |
+| Body of a submitted review ("Submit review" form) | `pull_request_review` |
+
+Useful when:
 - You've pushed code that addresses earlier findings and want a re-check
 - You've just added a `.nitpick.yaml` with new `context_notes` and want it to take effect on this PR
 - A previous review was silent and you suspect it shouldn't be
+- You're mid-review on a specific line and want the bot to also look
 
-Comment-triggered reviews **bypass the head-SHA dedup** (the user is explicitly asking) but still respect the skip rules for drafts, bot authors, and oversize PRs. Watch Railway logs for `comment trigger fired` followed by the usual `review complete` line.
+Comment-triggered reviews **bypass the head-SHA dedup** (the user is explicitly asking) but still respect the skip rules for drafts, bot authors, and oversize PRs. Watch Railway logs for `comment trigger fired` with `"trigger":"comment"|"inline-comment"|"review-body"` followed by the usual `review complete` line.
 
-**Requires**: the GitHub App must be subscribed to the **Issue comment** event. If you set up the App before v0.3 of this guide, go to App settings → **Subscribe to events** → tick **Issue comment** and save.
+**Requires**: the GitHub App must be subscribed to **Issue comment**, **Pull request review**, and **Pull request review comment** events. If you set up the App before this version of the guide, go to App settings → **Subscribe to events** → tick all three and save.
 
 ## Operational notes
 

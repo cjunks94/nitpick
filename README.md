@@ -84,10 +84,15 @@ One install → many repos, webhook-driven. Deploy `nitpick serve` to Railway / 
 
 ## Triggers
 
-By default, nitpick reviews on PR `opened` / `synchronize` (push) / `reopened` / `ready_for_review`. To manually re-run on demand:
+By default, nitpick reviews on PR `opened` / `synchronize` (push) / `reopened` / `ready_for_review`. To manually re-run on demand, type **`/nitpick`** (case-insensitive substring) anywhere a human can put text on a PR:
 
-- Comment **`/nitpick`** anywhere in any PR comment (case-insensitive substring match). Bypasses the head-SHA dedup so you get a fresh review even if no code changed since the last one. Useful for re-running after editing `.nitpick.yaml`, or to confirm a previously-silent review wasn't a bug.
-- Requires the GitHub App to be subscribed to the **Issue comment** event (see [`DEPLOY.md`](DEPLOY.md)).
+| Where | GitHub event |
+|---|---|
+| Top-level PR comment | `issue_comment` |
+| Inline reply on a review thread (under a specific line of code) | `pull_request_review_comment` |
+| Body of a submitted review | `pull_request_review` |
+
+Manual triggers bypass the head-SHA dedup (a user typing `/nitpick` is explicitly asking) but still respect the skip rules (drafts, bot authors, oversize PRs). Requires the App to be subscribed to all three event types — see [`DEPLOY.md`](DEPLOY.md).
 
 ## Architecture
 
