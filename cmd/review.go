@@ -39,6 +39,8 @@ func Review(ctx context.Context, args []string) error {
 			return fmt.Errorf("detect repo (pass --repo to override): %w", derr)
 		}
 		*repo = detected
+	} else if _, _, perr := ghc.ParseRepoArg(*repo); perr != nil {
+		return perr
 	}
 
 	rawDiff, err := ghc.FetchDiff(ctx, *repo, *pr)

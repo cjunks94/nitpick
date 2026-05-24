@@ -33,9 +33,9 @@ These are in the git log; don't re-do them.
 
 ## What's next
 
-### 6. Verify inline anchoring on a real PR
+### 6. ~~Verify inline anchoring on a real PR~~ — DONE
 
-The diff parser tracks both `NewLineNum` and `DiffPosition`. `internal/ghc/comments.go` posts with `line` + `side=RIGHT`. On the first real-PR post, verify comments land on the right lines. If GitHub rejects, fall back to the legacy `position` API (data is already in the parser output).
+Verified end-to-end in PR #1 (`test/v0.1.0-inline-anchor`). nitpick reviewed its own bait file (`internal/ghc/repoarg.go`), correctly identified the contract-drift bug at line 11 (`return parts[0], parts[1]` — would panic on no-`/` input), severity `critical`, category `contract_drift`. The GitHub `line` + `side=RIGHT` review-comment API works as designed; legacy `position` fallback unused. PR squash-merged once the validation fix was added.
 
 ### 7. Tag and release
 
