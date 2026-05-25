@@ -8,6 +8,8 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -588,12 +590,86 @@ func fetchRepoNotes(ctx context.Context, log *slog.Logger, client *ghc.HTTPClien
 	return []byte(notes)
 }
 
-// fetchContextFiles pulls the full content of each unique file touched by
-// the diff (at the PR head SHA), to give the reviewer enough context to
-// avoid the "needs surrounding code" false-positive class. Returns nil on
-// any error — diff-only review is the graceful fallback and worse than
-// having context but better than crashing.
+// contextDenyExtensions are file suffixes we never fetch as context — they're
+// generated, binary metadata, or lockfile churn that adds no review signal
+// and wastes the context budget. Observed in prod: Godot .uid files (3 bytes
+// of "uid://...") ate 40% of a PR's context budget, crowding out the actual
+// changed source files. Lowercase comparison; extensions include the leading
+// dot.
+var contextDenyExtensions = []string{
+	".uid",     // Godot resource metadata
+	".sum",     // go.sum / similar checksum files
+	".lock",    // generic lockfile suffix
+	".min.js",  // minified bundles
+	".min.css", // minified bundles
+	".map",     // sourcemaps
+	".pb.go",   // generated protobuf (Go)
+	".pyc",     // compiled Python
+}
+
+// contextDenyFilenames is a hard-coded list of basenames we always skip
+// regardless of path. Lockfiles for the major ecosystems.
+var contextDenyFilenames = map[string]bool{
+	"package-lock.json": true,
+	"yarn.lock":         true,
+	"pnpm-lock.yaml":    true,
+	"Gemfile.lock":      true,
+	"Cargo.lock":        true,
+	"poetry.lock":       true,
+	"Pipfile.lock":      true,
+	"composer.lock":     true,
+	"go.sum":            true,
+}
+
+// isContextDenied reports whether a file path is on the don't-fetch list.
+// Path comparison is case-insensitive on the extensions (since some
+// repos / OSes do uppercase) but case-sensitive on basenames (lockfile
+// names are stable).
+func isContextDenied(path string) bool {
+	if contextDenyFilenames[filepath.Base(path)] {
+		return true
+	}
+	lower := strings.ToLower(path)
+	for _, ext := range contextDenyExtensions {
+		if strings.HasSuffix(lower, ext) {
+			return true
+		}
+	}
+	return false
+}
+
+// fileChangeWeight returns the number of added+removed lines for a file
+// across all its hunks. Used as the sort key so the biggest changes get
+// context priority when the file-count budget is tight.
+func fileChangeWeight(hunks []diff.Hunk, file string) int {
+	n := 0
+	for _, h := range hunks {
+		if h.File != file {
+			continue
+		}
+		for _, line := range h.Lines {
+			if line.Kind == diff.LineAdded || line.Kind == diff.LineRemoved {
+				n++
+			}
+		}
+	}
+	return n
+}
+
+// fetchContextFiles pulls the full content of files touched by the diff (at
+// the PR head SHA), to give the reviewer enough context to avoid the "needs
+// surrounding code" false-positive class. Returns nil on any error — diff-
+// only review is the graceful fallback and worse than having context but
+// better than crashing.
+//
+// Two prioritization rules applied before the maxContextFiles cap:
+//  1. Skip files matching the deny list (generated metadata, lockfiles,
+//     minified bundles). Observed in prod: .uid files burned context budget
+//     and crowded out real source files.
+//  2. Sort remaining by added+removed line count descending — the biggest
+//     changes are the most likely to need surrounding context.
 func fetchContextFiles(ctx context.Context, log *slog.Logger, client *ghc.HTTPClient, repo, sha string, hunks []diff.Hunk) []provider.ContextFile {
+	// Collect unique non-denied file paths.
 	seen := make(map[string]bool, len(hunks))
 	var paths []string
 	for _, h := range hunks {
@@ -601,10 +677,19 @@ func fetchContextFiles(ctx context.Context, log *slog.Logger, client *ghc.HTTPCl
 			continue
 		}
 		seen[h.File] = true
-		paths = append(paths, h.File)
-		if len(paths) >= maxContextFiles {
-			break
+		if isContextDenied(h.File) {
+			log.Debug("context file denied by pattern", "path", h.File)
+			continue
 		}
+		paths = append(paths, h.File)
+	}
+	// Sort by change weight desc so the biggest changes win the budget.
+	sort.SliceStable(paths, func(i, j int) bool {
+		return fileChangeWeight(hunks, paths[i]) > fileChangeWeight(hunks, paths[j])
+	})
+	// Apply the file-count cap after sorting (not during enumeration).
+	if len(paths) > maxContextFiles {
+		paths = paths[:maxContextFiles]
 	}
 	if len(paths) == 0 {
 		return nil
