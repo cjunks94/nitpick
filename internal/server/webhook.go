@@ -510,9 +510,15 @@ func (h *Handler) reviewPR(ctx context.Context, log *slog.Logger, repo string, p
 		log.Error("provider review", "err", err)
 		return
 	}
+	duration := time.Since(start)
+	statusBody := ghc.BuildStatusCommentBody(h.Provider.Name(), res.Comments, res.CostUSD, duration)
+
 	if len(res.Comments) == 0 {
+		if err := client.PostIssueComment(ctx, repo, prNum, statusBody); err != nil {
+			log.Warn("post status comment", "err", err)
+		}
 		log.Info("review complete (silent)",
-			"duration_ms", time.Since(start).Milliseconds(),
+			"duration_ms", duration.Milliseconds(),
 			"cost_usd", res.CostUSD)
 		return
 	}
@@ -527,9 +533,12 @@ func (h *Handler) reviewPR(ctx context.Context, log *slog.Logger, repo string, p
 		}
 		return
 	}
+	if err := client.PostIssueComment(ctx, repo, prNum, statusBody); err != nil {
+		log.Warn("post status comment", "err", err)
+	}
 	log.Info("review complete",
 		"findings", len(res.Comments),
-		"duration_ms", time.Since(start).Milliseconds(),
+		"duration_ms", duration.Milliseconds(),
 		"cost_usd", res.CostUSD)
 }
 
