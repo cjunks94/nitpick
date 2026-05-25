@@ -569,25 +569,33 @@ const (
 // in normal PR review, so this isn't a security hole — a malicious notes
 // edit would be visible.
 func fetchRepoNotes(ctx context.Context, log *slog.Logger, client *ghc.HTTPClient, repo, sha string) []byte {
+	// Always log the load state at INFO. Three terminal states; each gets
+	// one log line so a reader can answer "did notes apply on this review?"
+	// without expanding to debug level. The prior implementation logged
+	// the absent / empty cases at DEBUG, which silently hid load failures
+	// when diagnosing false positives.
 	content, err := client.FetchFile(ctx, repo, sha, repoConfigPath)
 	if err != nil {
-		// Most common: repo has no .nitpick.yaml. Debug-level only.
-		log.Debug("no .nitpick.yaml", "err", err)
+		log.Info("repo notes not loaded", "reason", "no .nitpick.yaml at head SHA")
 		return nil
 	}
 	if len(content) > maxRepoConfigBytes {
-		log.Warn(".nitpick.yaml exceeds size cap; skipping",
+		log.Warn("repo notes not loaded",
+			"reason", ".nitpick.yaml exceeds size cap",
 			"bytes", len(content), "cap", maxRepoConfigBytes)
 		return nil
 	}
 	cfg, err := config.Parse(content)
 	if err != nil {
-		log.Warn("parse .nitpick.yaml failed; skipping repo notes", "err", err)
+		log.Warn("repo notes not loaded",
+			"reason", ".nitpick.yaml parse failed",
+			"err", err)
 		return nil
 	}
 	notes := cfg.Review.ContextNotes
 	if notes == "" {
-		log.Debug(".nitpick.yaml present but no context_notes")
+		log.Info("repo notes not loaded",
+			"reason", ".nitpick.yaml present but context_notes field is empty")
 		return nil
 	}
 	if len(notes) > maxRepoNotesBytes {
