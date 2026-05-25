@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/cjunks94/nitpick/internal/config"
 	"github.com/cjunks94/nitpick/internal/diff"
@@ -58,6 +59,7 @@ func Review(ctx context.Context, args []string) error {
 		return err
 	}
 
+	start := time.Now()
 	result, err := p.Review(ctx, provider.ReviewRequest{
 		Hunks:  hunks,
 		Config: cfg.Review,
@@ -65,9 +67,17 @@ func Review(ctx context.Context, args []string) error {
 	if err != nil {
 		return fmt.Errorf("review: %w", err)
 	}
+	duration := time.Since(start)
 
 	if *dryRun {
 		return ghc.PrintComments(os.Stdout, result.Comments, result.CostUSD)
 	}
-	return ghc.PostReview(ctx, *repo, *pr, result.Comments)
+	if err := ghc.PostReview(ctx, *repo, *pr, result.Comments); err != nil {
+		return err
+	}
+	statusBody := ghc.BuildStatusCommentBody(p.Name(), result.Comments, result.CostUSD, duration)
+	if err := ghc.PostIssueComment(ctx, *repo, *pr, statusBody); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: post status comment: %v\n", err)
+	}
+	return nil
 }
