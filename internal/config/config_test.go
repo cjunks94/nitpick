@@ -54,6 +54,36 @@ review:
 			yaml:    "provider: anthropic\nreview: [this is not a map",
 			wantErr: true,
 		},
+		{
+			name: "ignore_paths populates and parses globs",
+			yaml: `
+review:
+  ignore_paths:
+    - "vendor/**"
+    - "**/*.uid"
+    - "**/*.generated.go"
+`,
+			check: func(t *testing.T, c Config) {
+				want := []string{"vendor/**", "**/*.uid", "**/*.generated.go"}
+				if len(c.Review.IgnorePaths) != len(want) {
+					t.Fatalf("IgnorePaths len = %d, want %d", len(c.Review.IgnorePaths), len(want))
+				}
+				for i, p := range want {
+					if c.Review.IgnorePaths[i] != p {
+						t.Errorf("IgnorePaths[%d] = %q, want %q", i, c.Review.IgnorePaths[i], p)
+					}
+				}
+			},
+		},
+		{
+			name: "malformed ignore_paths glob fails Parse",
+			yaml: `
+review:
+  ignore_paths:
+    - "[unclosed"
+`,
+			wantErr: true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

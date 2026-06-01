@@ -496,8 +496,39 @@ func (h *Handler) reviewPR(ctx context.Context, log *slog.Logger, repo string, p
 		return
 	}
 
+	repoCfg := fetchRepoConfig(ctx, log, client, repo, headSHA)
+	var (
+		repoNotes   []byte
+		ignorePaths []string
+	)
+	if repoCfg != nil {
+		if s := repoCfg.Review.ContextNotes; s != "" {
+			repoNotes = []byte(s)
+		}
+		ignorePaths = repoCfg.Review.IgnorePaths
+	}
+	if len(ignorePaths) > 0 {
+		before := len(hunks)
+		hunks = diff.FilterByPath(hunks, func(p string) bool {
+			return config.MatchAny(p, ignorePaths)
+		})
+		if dropped := before - len(hunks); dropped > 0 {
+			log.Info("ignore_paths applied", "hunks_dropped", dropped, "hunks_kept", len(hunks))
+		}
+	}
+	if len(hunks) == 0 {
+		// Every changed file matched ignore_paths — no point invoking the
+		// LLM. Still post a status comment so the run isn't silent (same
+		// pattern as the zero-findings case): visible runs are debuggable.
+		body := "**nitpick** — all changed files filtered by `.nitpick.yaml` `ignore_paths`; nothing to review"
+		if err := client.PostIssueComment(ctx, repo, prNum, body); err != nil {
+			log.Warn("post status comment", "err", err)
+		}
+		log.Info("review skipped", "reason", "no hunks remain after ignore_paths filter")
+		return
+	}
+
 	contextFiles := fetchContextFiles(ctx, log, client, repo, headSHA, hunks)
-	repoNotes := fetchRepoNotes(ctx, log, client, repo, headSHA)
 
 	res, err := h.Provider.Review(ctx, provider.ReviewRequest{
 		Hunks:          hunks,
@@ -558,53 +589,66 @@ const (
 	maxRepoConfigBytes = 32 * 1024 // size of the .nitpick.yaml itself
 )
 
-// fetchRepoNotes pulls .nitpick.yaml from the repo at the PR head SHA and
-// returns the parsed context_notes as bytes (to be injected as a cached
-// <repo-notes> system block by the provider). Returns nil on any error —
-// no config file is the common case, not an error to surface.
+// fetchRepoConfig pulls .nitpick.yaml from the repo at the PR head SHA and
+// returns the parsed config. Returns nil if the file is missing, too large,
+// or malformed — diff-only review with built-in defaults is the graceful
+// fallback. The returned config may still have empty fields (e.g. no
+// context_notes); callers should check each field independently.
 //
 // Why head SHA: if a PR adds or updates .nitpick.yaml, those changes take
 // effect on the PR's own review. Mental model: "the bot reviews you with
 // the config you're proposing." A human still sees the .nitpick.yaml diff
 // in normal PR review, so this isn't a security hole — a malicious notes
 // edit would be visible.
-func fetchRepoNotes(ctx context.Context, log *slog.Logger, client *ghc.HTTPClient, repo, sha string) []byte {
-	// Always log the load state at INFO. Three terminal states; each gets
-	// one log line so a reader can answer "did notes apply on this review?"
-	// without expanding to debug level. The prior implementation logged
-	// the absent / empty cases at DEBUG, which silently hid load failures
-	// when diagnosing false positives.
+func fetchRepoConfig(ctx context.Context, log *slog.Logger, client *ghc.HTTPClient, repo, sha string) *config.Config {
+	// Always log the load state at INFO. Each terminal state gets one log
+	// line so a reader can answer "did notes apply on this review?" without
+	// expanding to debug level. The prior implementation logged the absent /
+	// empty cases at DEBUG, which silently hid load failures when diagnosing
+	// false positives.
 	content, err := client.FetchFile(ctx, repo, sha, repoConfigPath)
 	if err != nil {
-		log.Info("repo notes not loaded", "reason", "no .nitpick.yaml at head SHA")
+		if errors.Is(err, ghc.ErrFileNotFound) {
+			log.Info("repo config not loaded", "reason", "no .nitpick.yaml at head SHA")
+		} else {
+			// Auth, rate-limit, or transport failure — surface so the operator
+			// can tell a real GitHub problem apart from the (common) absence
+			// case. Still fall through to nil so the review degrades to
+			// defaults rather than crashing the goroutine.
+			log.Warn("repo config not loaded", "reason", "fetch failed", "err", err)
+		}
 		return nil
 	}
 	if len(content) > maxRepoConfigBytes {
-		log.Warn("repo notes not loaded",
+		log.Warn("repo config not loaded",
 			"reason", ".nitpick.yaml exceeds size cap",
 			"bytes", len(content), "cap", maxRepoConfigBytes)
 		return nil
 	}
 	cfg, err := config.Parse(content)
 	if err != nil {
-		log.Warn("repo notes not loaded",
+		log.Warn("repo config not loaded",
 			"reason", ".nitpick.yaml parse failed",
 			"err", err)
 		return nil
 	}
 	notes := cfg.Review.ContextNotes
-	if notes == "" {
+	switch {
+	case notes == "":
 		log.Info("repo notes not loaded",
 			"reason", ".nitpick.yaml present but context_notes field is empty")
-		return nil
-	}
-	if len(notes) > maxRepoNotesBytes {
+	case len(notes) > maxRepoNotesBytes:
 		log.Warn("context_notes exceeds size cap; truncating",
 			"bytes", len(notes), "cap", maxRepoNotesBytes)
-		notes = notes[:maxRepoNotesBytes]
+		cfg.Review.ContextNotes = notes[:maxRepoNotesBytes]
+		log.Info("repo notes loaded", "bytes", maxRepoNotesBytes)
+	default:
+		log.Info("repo notes loaded", "bytes", len(notes))
 	}
-	log.Info("repo notes loaded", "bytes", len(notes))
-	return []byte(notes)
+	if n := len(cfg.Review.IgnorePaths); n > 0 {
+		log.Info("repo ignore_paths loaded", "count", n)
+	}
+	return &cfg
 }
 
 // contextDenyExtensions are file suffixes we never fetch as context — they're

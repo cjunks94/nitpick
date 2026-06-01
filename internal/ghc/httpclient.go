@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,6 +12,12 @@ import (
 
 	"github.com/cjunks94/nitpick/internal/provider"
 )
+
+// ErrFileNotFound is wrapped by FetchFile when the GitHub Contents API
+// responds 404 at the requested ref. Callers should use errors.Is to
+// distinguish expected absence (no .nitpick.yaml, file deleted in PR)
+// from auth, rate-limit, or transport failures that warrant a warning.
+var ErrFileNotFound = errors.New("file not found")
 
 // HTTPClient calls the GitHub REST API directly using an installation token.
 // Used by `nitpick serve` where the gh CLI isn't available (Railway container).
@@ -127,7 +134,7 @@ func (c *HTTPClient) FetchFile(ctx context.Context, repo, sha, path string) ([]b
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode == http.StatusNotFound {
-		return nil, fmt.Errorf("file %s not found at %s", path, sha)
+		return nil, fmt.Errorf("file %s not found at %s: %w", path, sha, ErrFileNotFound)
 	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("fetch file %s: HTTP %d: %s", path, resp.StatusCode, truncate(string(body), 300))

@@ -51,6 +51,9 @@ func Parse(b []byte) (Config, error) {
 	if err := yaml.Unmarshal(b, &cfg); err != nil {
 		return Config{}, fmt.Errorf("parse .nitpick.yaml: %w", err)
 	}
+	if err := ValidatePatterns(cfg.Review.IgnorePaths); err != nil {
+		return Config{}, fmt.Errorf("parse .nitpick.yaml: review.ignore_paths: %w", err)
+	}
 	return cfg, nil
 }
 
