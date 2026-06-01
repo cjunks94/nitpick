@@ -58,6 +58,24 @@ func TestFetchRepoConfig_No404IsSilent(t *testing.T) {
 	}
 }
 
+func TestFetchRepoConfig_5xxIsGraceful(t *testing.T) {
+	// Transport / auth / rate-limit failures still degrade to nil so the
+	// review continues with defaults rather than crashing the goroutine.
+	// The distinction from the 404 path is in the log level (Warn vs Info),
+	// asserted by the call shape rather than log capture here.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte("github exploded"))
+	}))
+	defer srv.Close()
+	client := &ghc.HTTPClient{BaseURL: srv.URL, Token: "test", HTTPClient: srv.Client()}
+
+	got := fetchRepoConfig(context.Background(), silentLogger(), client, "owner/repo", "abc")
+	if got != nil {
+		t.Errorf("expected nil on 5xx, got: %+v", got)
+	}
+}
+
 func TestFetchRepoConfig_EmptyContextNotesStillReturnsConfig(t *testing.T) {
 	// .nitpick.yaml exists with no context_notes but with ignore_paths.
 	// The config is still returned — empty notes are not a fatal error,

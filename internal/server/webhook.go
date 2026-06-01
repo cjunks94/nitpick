@@ -516,6 +516,17 @@ func (h *Handler) reviewPR(ctx context.Context, log *slog.Logger, repo string, p
 			log.Info("ignore_paths applied", "hunks_dropped", dropped, "hunks_kept", len(hunks))
 		}
 	}
+	if len(hunks) == 0 {
+		// Every changed file matched ignore_paths — no point invoking the
+		// LLM. Still post a status comment so the run isn't silent (same
+		// pattern as the zero-findings case): visible runs are debuggable.
+		body := "**nitpick** — all changed files filtered by `.nitpick.yaml` `ignore_paths`; nothing to review"
+		if err := client.PostIssueComment(ctx, repo, prNum, body); err != nil {
+			log.Warn("post status comment", "err", err)
+		}
+		log.Info("review skipped", "reason", "no hunks remain after ignore_paths filter")
+		return
+	}
 
 	contextFiles := fetchContextFiles(ctx, log, client, repo, headSHA, hunks)
 
@@ -597,7 +608,15 @@ func fetchRepoConfig(ctx context.Context, log *slog.Logger, client *ghc.HTTPClie
 	// false positives.
 	content, err := client.FetchFile(ctx, repo, sha, repoConfigPath)
 	if err != nil {
-		log.Info("repo config not loaded", "reason", "no .nitpick.yaml at head SHA")
+		if errors.Is(err, ghc.ErrFileNotFound) {
+			log.Info("repo config not loaded", "reason", "no .nitpick.yaml at head SHA")
+		} else {
+			// Auth, rate-limit, or transport failure — surface so the operator
+			// can tell a real GitHub problem apart from the (common) absence
+			// case. Still fall through to nil so the review degrades to
+			// defaults rather than crashing the goroutine.
+			log.Warn("repo config not loaded", "reason", "fetch failed", "err", err)
+		}
 		return nil
 	}
 	if len(content) > maxRepoConfigBytes {
