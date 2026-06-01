@@ -53,6 +53,15 @@ func Review(ctx context.Context, args []string) error {
 	if err != nil {
 		return fmt.Errorf("parse diff: %w", err)
 	}
+	if len(cfg.Review.IgnorePaths) > 0 {
+		before := len(hunks)
+		hunks = diff.FilterByPath(hunks, func(p string) bool {
+			return config.MatchAny(p, cfg.Review.IgnorePaths)
+		})
+		if d := before - len(hunks); d > 0 {
+			fmt.Fprintf(os.Stderr, "ignored %d hunk(s) by .nitpick.yaml ignore_paths\n", d)
+		}
+	}
 
 	p, err := provider.New(*providerName, cfg.Model)
 	if err != nil {
