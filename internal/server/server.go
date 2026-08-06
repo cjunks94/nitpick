@@ -87,15 +87,45 @@ func Run(cfg Config) error {
 		logger.Info("shutdown signal received, draining...")
 	}
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), httpShutdownGrace)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		logger.Error("shutdown", "err", err)
 		return err
 	}
+
+	// srv.Shutdown only waits for HTTP handlers, and nitpick's handlers return
+	// 202 immediately — the actual review runs in a detached goroutine. Before
+	// this, Shutdown returned within milliseconds, Run returned, and the
+	// process exited with every in-flight review killed mid-LLM-call: tokens
+	// billed, nothing posted. Both CLAUDE.md and HANDOFF.md claimed the
+	// SIGTERM handler prevented exactly that; it did not until now.
+	logger.Info("draining in-flight reviews", "grace_s", int(reviewDrainGrace.Seconds()))
+	if handler.Drain(reviewDrainGrace) {
+		logger.Info("all in-flight reviews completed")
+	} else {
+		logger.Warn("drain window expired; remaining reviews cancelled",
+			"grace_s", int(reviewDrainGrace.Seconds()))
+	}
 	logger.Info("shutdown complete")
 	return nil
 }
+
+const (
+	// httpShutdownGrace bounds waiting for open HTTP connections. Handlers
+	// return in milliseconds, so this only matters for slow clients.
+	httpShutdownGrace = 10 * time.Second
+
+	// reviewDrainGrace bounds waiting for detached review goroutines. Reviews
+	// take 5-30s, so this covers the common case with headroom.
+	//
+	// Railway sends SIGTERM then SIGKILL; the window between them is finite,
+	// so this plus httpShutdownGrace should stay under it. If reviews are
+	// routinely cut off on redeploy, shorten the provider timeout rather than
+	// growing this past the platform's kill delay — a drain longer than the
+	// SIGKILL window is a drain that never completes.
+	reviewDrainGrace = 45 * time.Second
+)
 
 // withRequestLogging logs every request at INFO with method, path, status,
 // and duration. Lightweight — skipping the full request-ID-middleware
