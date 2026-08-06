@@ -192,9 +192,12 @@ func parseFindings(text string) ([]Comment, error) {
 		findingsIdx = 0
 	}
 	start := strings.LastIndex(text[:findingsIdx+1], "{")
-	end := strings.LastIndex(text, "}")
-	if start < 0 || end <= start {
-		return nil, nil // findings key but no enclosing braces → silent
+	if start < 0 {
+		return nil, nil // findings key but no enclosing brace → silent
+	}
+	end := matchingBrace(text, start)
+	if end <= start {
+		return nil, nil // unterminated object → silent
 	}
 
 	var payload struct {
@@ -225,6 +228,47 @@ func parseFindings(text string) ([]Comment, error) {
 		})
 	}
 	return out, nil
+}
+
+// matchingBrace returns the index of the '}' that closes the '{' at start, or
+// -1 if the object never terminates. Brace counting is string-literal aware so
+// a '}' inside a finding body doesn't close the object early.
+//
+// Replaces an earlier strings.LastIndex(text, "}"), which grabbed the last
+// brace anywhere in the response. Models append trailing prose more often than
+// the prompt implies ("...}\n\nLet me know if you'd like {more detail}"), and
+// over-capturing made json.Unmarshal fail — which discarded an entire review
+// the operator had already paid for.
+func matchingBrace(s string, start int) int {
+	depth := 0
+	inString := false
+	escaped := false
+	for i := start; i < len(s); i++ {
+		c := s[i]
+		if inString {
+			switch {
+			case escaped:
+				escaped = false
+			case c == '\\':
+				escaped = true
+			case c == '"':
+				inString = false
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			inString = true
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+	return -1
 }
 
 // renderUserMessage builds the full user-side payload: optional context-files
