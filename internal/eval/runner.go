@@ -88,6 +88,8 @@ func Run(ctx context.Context, casesPath, outPath string, p provider.Provider, lo
 		results = append(results, score(c, res))
 	}
 
+	// #nosec G304 -- outPath comes from the operator's --out flag; this is
+	// a CLI tool running with the user's own privileges. No untrusted input.
 	out, err := os.Create(outPath)
 	if err != nil {
 		return err
@@ -131,6 +133,8 @@ func score(c Case, res provider.ReviewResult) CaseResult {
 func loadRepoGuidelines(reposDir, repo string) ([]byte, error) {
 	sanitized := strings.ReplaceAll(repo, "/", "__")
 	path := filepath.Join(reposDir, sanitized+".md")
+	// #nosec G304 -- repo strings come from cases.jsonl curated by the
+	// operator; reposDir is a CLI-provided directory. CLI-tool trust model.
 	b, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -142,6 +146,8 @@ func loadRepoGuidelines(reposDir, repo string) ([]byte, error) {
 }
 
 func loadCases(path string) ([]Case, error) {
+	// #nosec G304 -- path is the operator-provided --cases flag value; this
+	// is a CLI tool running with the user's own privileges.
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
