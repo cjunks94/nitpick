@@ -17,6 +17,37 @@ review:
     - security
     - perf
 
+  # CodeRabbit interop. nitpick is designed to run ALONGSIDE CodeRabbit, not
+  # instead of it: CodeRabbit covers style, naming, and generic refactors;
+  # nitpick targets contract drift, unenforced security gates, and perf issues
+  # tied to this repo's data shape.
+  #
+  # With this on, nitpick reads CodeRabbit's existing comments on the PR before
+  # reviewing and tells the model what ground is already covered — so the two
+  # bots stop restating each other. Without it, the prompt can only *guess* at
+  # what CodeRabbit would have said.
+  coderabbit:
+    # Fetch CodeRabbit's comments and dedupe against them. Default: true.
+    # Costs one extra GitHub call per review.
+    enabled: true
+
+    # Logins treated as CodeRabbit. Override for enterprise/self-hosted
+    # installs. Default: ["coderabbitai[bot]", "coderabbitai"]
+    # bots: ["coderabbitai[bot]"]
+
+    # Wait for CodeRabbit to post before reviewing, so the dedup above always
+    # has something to work with. Default: false.
+    #
+    # Turn this on only if CodeRabbit is reliably installed on this repo —
+    # otherwise every review pays wait_timeout before giving up. nitpick NEVER
+    # skips the review on timeout; it just proceeds with whatever it has.
+    #
+    # `serve` only. The `nitpick review` CLI ignores this: blocking a terminal
+    # (or a billed Actions minute) on another bot is the wrong default.
+    wait: false
+    wait_timeout: 5m       # ceiling is 10m
+    poll_interval: 15s     # floor is 5s
+
   # Free-form notes injected into the reviewer's system prompt as a cached
   # block. Tell the bot what's specific to THIS repo: language conventions,
   # framework-specific patterns, things the team doesn't want flagged.

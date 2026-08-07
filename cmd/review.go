@@ -83,6 +83,32 @@ func Review(ctx context.Context, args []string) error {
 		return err
 	}
 
+	// CodeRabbit dedup, same as the serve path: show the reviewer what another
+	// bot has already said so it adds rather than repeats. Best-effort — a
+	// failed fetch degrades to a review without dedup rather than aborting.
+	//
+	// The wait option is deliberately not honored here. `nitpick review` is a
+	// foreground command run by a human or an Action step; blocking a terminal
+	// (or a billed Actions minute) for minutes waiting on another bot is the
+	// wrong default. Use `serve` if you want ordered reviews.
+	var priorFindings []provider.PriorFinding
+	if crCfg := cfg.Review.CodeRabbit; crCfg.IsEnabled() {
+		existing, cerr := ghc.ListPRComments(ctx, *repo, *pr)
+		if cerr != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not load existing comments for dedup: %v\n", cerr)
+		} else {
+			for _, c := range ghc.FilterByAuthor(existing, crCfg.BotLogins()) {
+				priorFindings = append(priorFindings, provider.PriorFinding{
+					Author: c.Author, Path: c.Path, Line: c.Line, Body: c.Body,
+				})
+			}
+			if len(priorFindings) > 0 {
+				fmt.Fprintf(os.Stderr, "dedup: %d existing CodeRabbit comment(s) shown to the reviewer\n",
+					len(priorFindings))
+			}
+		}
+	}
+
 	// context_notes goes to the provider as a system block. Redact it under
 	// the same rule as the diff: nothing leaves the process with a credential
 	// in it. Copy first so the loaded config is not mutated.
@@ -94,8 +120,9 @@ func Review(ctx context.Context, args []string) error {
 
 	start := time.Now()
 	result, err := p.Review(ctx, provider.ReviewRequest{
-		Hunks:  hunks,
-		Config: reviewCfg,
+		Hunks:         hunks,
+		Config:        reviewCfg,
+		PriorFindings: priorFindings,
 	})
 	if err != nil {
 		return fmt.Errorf("review: %w", err)

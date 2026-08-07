@@ -257,6 +257,29 @@ The `context_notes` field is the key per-repo lever. nitpick fetches `.nitpick.y
 
 For server-mode env vars (App ID, private key, webhook secret), see [`.env.example`](.env.example) and [`DEPLOY.md`](DEPLOY.md).
 
+### Running alongside CodeRabbit
+
+nitpick is built to sit next to CodeRabbit rather than replace it. CodeRabbit covers style, naming, and generic refactors; nitpick's prompt deliberately skips all of that and aims at contract drift, unenforced security gates, and perf issues tied to the repo's data shape.
+
+The prompt has always *said* to skip "anything CodeRabbit would also flag" — but that was a guess about another bot's behaviour. With the `coderabbit` block, nitpick reads CodeRabbit's actual comments on the PR first and shows them to the model as already-covered ground:
+
+```yaml
+review:
+  coderabbit:
+    enabled: true          # read CodeRabbit's comments and dedupe (default: true)
+    # bots: ["coderabbitai[bot]"]   # override for enterprise/self-hosted installs
+
+    wait: false            # wait for CodeRabbit to post before reviewing
+    wait_timeout: 5m       # ceiling 10m; on expiry nitpick reviews anyway
+    poll_interval: 15s     # floor 5s
+```
+
+- **`enabled`** (default on) costs one extra GitHub call per review. Inline comments are prioritised over CodeRabbit's walkthrough summary, since that's where overlap actually happens.
+- **`wait`** (default off) makes ordering deterministic so the dedup always has data. Only worth turning on where CodeRabbit is reliably installed — otherwise every review pays `wait_timeout` before giving up. nitpick **never** skips a review because of the wait; on timeout it proceeds with whatever it has. Re-reviews only count comments posted *after* the current run started, so stale comments from a previous push don't satisfy the wait.
+- `wait` applies to `nitpick serve` only. The `nitpick review` CLI still dedupes but doesn't block — holding a terminal or a billed Actions minute on another bot is the wrong default.
+
+CodeRabbit's comments are passed in the **user** message, explicitly framed as data rather than instructions: they're text from a bot commenting on a PR anyone can open, so they don't belong in the system block.
+
 ---
 
 ## Development

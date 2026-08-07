@@ -11,6 +11,7 @@ State snapshot at v0.2.0, plus the v0.3 work listed under "Shipped since this sn
 - **`/nitpick` comment triggers** across `issue_comment`, `pull_request_review_comment`, `pull_request_review`.
 - **Per-review status comments** so silent runs are visible.
 - **Prompt v2.2 → v2.7.** These landed without eval re-runs at the time. Re-baselined on 2026-09-02 (commits `8142756`..`c7e7785`, six runs, ~$1.65 total) — see the v2.7 rows in the results table below. Haiku held; Sonnet lost a finding in two of three runs. The eval feeds diff-only input, so this measures the prompt text change, not context files or repo notes.
+- **CodeRabbit interop** — reads CodeRabbit's existing comments on the PR and shows them to the model as covered ground, plus an opt-in wait so ordering is deterministic. Config lives under `review.coderabbit`.
 - **Security hardening + secret redaction** (see below). Several v0.4.x "operational hardening" items moved up because they turned out to be exploitable, not just untidy.
 
 ### Security fixes worth not regressing
