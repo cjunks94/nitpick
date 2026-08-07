@@ -511,3 +511,51 @@ func TestConfigRef_ForkReadsBaseBranch(t *testing.T) {
 
 // Suppress unused-import warnings if the file becomes the only one using these.
 var _ atomic.Int32
+// The authorization gate must be ON for a Handler built as a struct literal.
+//
+// The field is phrased as an opt-OUT precisely so the zero value is safe. The
+// inverse (RequireWriteAccessForTrigger, default true) silently disabled the
+// gate for every struct-literal Handler, because ensureInit only repairs
+// unexported fields and a bool can't distinguish "unset" from "false".
+func TestAuthGate_OnByDefaultForStructLiteral(t *testing.T) {
+	h := &Handler{} // no NewHandler, no field set
+	if h.AllowUnauthenticatedTrigger {
+		t.Fatal("zero-value Handler has the write-access gate DISABLED — " +
+			"the safe state must be the zero value")
+	}
+	if n := NewHandler("s", nil, nil, silentLogger()); n.AllowUnauthenticatedTrigger {
+		t.Error("NewHandler should not disable the write-access gate")
+	}
+}
+
+// An unauthorized commenter must not be able to consume the cooldown slot and
+// lock a maintainer out of /nitpick for the window.
+func TestReleaseTriggerCooldown(t *testing.T) {
+	h := minimalHandler("s")
+	h.TriggerCooldown = time.Hour
+
+	if ok, _ := h.triggerCooledDown("owner/repo", 1); !ok {
+		t.Fatal("first claim should succeed")
+	}
+	if ok, _ := h.triggerCooledDown("owner/repo", 1); ok {
+		t.Fatal("second claim should be blocked while the slot is held")
+	}
+
+	// Authorization failed — the slot goes back.
+	h.releaseTriggerCooldown("owner/repo", 1)
+
+	if ok, _ := h.triggerCooledDown("owner/repo", 1); !ok {
+		t.Error("a maintainer should be able to trigger after an unauthorized " +
+			"commenter's claim was released")
+	}
+}
+
+func TestReleaseTriggerCooldown_SafeWhenDisabledOrAbsent(t *testing.T) {
+	h := minimalHandler("s")
+	h.TriggerCooldown = 0
+	h.releaseTriggerCooldown("owner/repo", 1) // must not panic
+
+	h2 := minimalHandler("s")
+	h2.TriggerCooldown = time.Minute
+	h2.releaseTriggerCooldown("never/claimed", 9) // must not panic
+}

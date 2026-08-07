@@ -125,23 +125,26 @@ func (a Anthropic) Review(ctx context.Context, req ReviewRequest) (ReviewResult,
 		return ReviewResult{}, fmt.Errorf("anthropic Messages.New: %w", err)
 	}
 
-	text := extractText(resp)
-	comments, err := parseFindings(text)
-	if err != nil {
-		return ReviewResult{}, fmt.Errorf("parse findings: %w (raw: %s)", err, truncate(text, 200))
-	}
-
+	// Usage is computed before parsing, and reported even when parsing fails.
+	// The API call succeeded and was billed at this point; returning a zero
+	// ReviewResult alongside a parse error would hide real spend from the
+	// server's rolling cost ceiling, so a provider stuck in a parse-failure
+	// loop could bill indefinitely while the guard read $0.00.
 	usage := TokenUsage{
 		Input:       int(resp.Usage.InputTokens) + int(resp.Usage.CacheCreationInputTokens),
 		Output:      int(resp.Usage.OutputTokens),
 		CachedInput: int(resp.Usage.CacheReadInputTokens),
 	}
+	billed := ReviewResult{Tokens: usage, CostUSD: a.cost(resp.Usage)}
 
-	return ReviewResult{
-		Comments: comments,
-		Tokens:   usage,
-		CostUSD:  a.cost(resp.Usage),
-	}, nil
+	text := extractText(resp)
+	comments, err := parseFindings(text)
+	if err != nil {
+		return billed, fmt.Errorf("parse findings: %w (raw: %s)", err, truncate(text, 200))
+	}
+
+	billed.Comments = comments
+	return billed, nil
 }
 
 // cost computes USD from the four token buckets. Cache writes are billed at

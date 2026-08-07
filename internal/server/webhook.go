@@ -194,12 +194,19 @@ type Handler struct {
 	SkipUserLogins []string // skip PRs from these users (e.g. "dependabot[bot]")
 	Logger         *slog.Logger
 
-	// RequireWriteAccessForTrigger gates the /nitpick command on the
-	// commenter holding push access to the repository. Anyone can comment on
-	// a public repo's PR; without this, any GitHub account can spend the
-	// operator's LLM budget at will. Defaults true; set false only for a
-	// private repo where every commenter is already trusted.
-	RequireWriteAccessForTrigger bool
+	// AllowUnauthenticatedTrigger disables the write-access check on the
+	// /nitpick command. Anyone can comment on a public repo's PR, so with
+	// this on, any GitHub account can spend the operator's LLM budget at
+	// will. Set it only for a private repo where every commenter is already
+	// trusted.
+	//
+	// Phrased as an opt-OUT so the zero value is the safe one. The inverse
+	// (RequireWriteAccessForTrigger bool, default true) cannot work: a bool
+	// can't distinguish "unset" from "explicitly false", and ensureInit only
+	// repairs unexported fields — so every Handler built as a struct literal
+	// silently ran with authorization disabled. That construction path is
+	// documented as supported and the test helper uses it.
+	AllowUnauthenticatedTrigger bool
 
 	// TriggerCooldown is the minimum interval between comment-triggered
 	// reviews of the same PR.
@@ -282,7 +289,6 @@ func NewHandler(secret string, ts *ghapp.InstallationTokenSource, p provider.Pro
 		MaxLinesPerPR:                1000,
 		SkipUserLogins:               []string{"dependabot[bot]", "renovate[bot]"},
 		Logger:                       logger,
-		RequireWriteAccessForTrigger: true,
 		TriggerCooldown:              defaultTriggerCooldown,
 		MaxSpendPerHourUSD:           defaultMaxSpendPerHourUSD,
 		seen:                         make(map[string]time.Time),
@@ -425,6 +431,21 @@ func (h *Handler) triggerCooledDown(repo string, pr int) (bool, time.Duration) {
 	return true, 0
 }
 
+// releaseTriggerCooldown undoes a triggerCooledDown claim for a PR whose
+// trigger turned out not to be actionable. Used when authorization fails:
+// the claim is made synchronously (before an installation token exists to
+// check permissions with), so without this an unauthorized commenter could
+// deny a maintainer the /nitpick command for the whole cooldown window.
+func (h *Handler) releaseTriggerCooldown(repo string, pr int) {
+	if h.TriggerCooldown <= 0 {
+		return
+	}
+	h.ensureInit()
+	h.cooldownMu.Lock()
+	defer h.cooldownMu.Unlock()
+	delete(h.lastTrigger, fmt.Sprintf("%s|%d", repo, pr))
+}
+
 // ServeHTTP handles POST /webhook. Validates signature, parses the event,
 // applies skip rules, returns 202 fast, and spawns a goroutine to actually
 // run the review. GitHub's webhook delivery times out around 10s — the
@@ -506,11 +527,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		HeadSHA:   pre.PullRequest.Head.SHA,
 		InstallID: pre.Installation.ID,
 		BaseRef:   pre.PullRequest.Base.Ref,
-		// A fork PR's head lives in a different repository. Files read from
-		// that head — notably .nitpick.yaml, which steers the reviewer — are
-		// authored by someone without write access and must not be trusted.
-		HeadIsUntrusted: pre.PullRequest.Head.Repo.FullName != "" &&
-			pre.PullRequest.Head.Repo.FullName != pre.Repository.FullName,
+		// Files read from a fork head — notably .nitpick.yaml, which steers
+		// the reviewer — are authored by someone without write access and
+		// must not be trusted. Shares ghc's fail-closed rule so the webhook
+		// and comment-trigger paths can't drift apart on the unknown case.
+		HeadIsUntrusted: ghc.PRDetails{
+			HeadRepo: pre.PullRequest.Head.Repo.FullName,
+			BaseRepo: pre.Repository.FullName,
+		}.HeadIsUntrusted(),
 	}
 	h.goReview(log, func(ctx context.Context) { h.reviewPR(ctx, log, target) })
 }
@@ -679,14 +703,21 @@ func (h *Handler) handleCommentTriggerAsync(ctx context.Context, log *slog.Logge
 	// to spend the operator's Anthropic budget — and comment triggers bypass
 	// head-SHA dedup by design, so there is nothing else to stop repetition.
 	// Fails closed: any error reading the permission means no review.
-	if h.RequireWriteAccessForTrigger {
+	if !h.AllowUnauthenticatedTrigger {
 		perm, err := client.RepoPermission(ctx, repo, commenter)
 		if err != nil {
 			log.Error("check commenter permission; refusing trigger", "err", err)
+			h.releaseTriggerCooldown(repo, prNum)
 			return
 		}
 		if !ghc.CanWrite(perm) {
 			log.Info("skip", "reason", "commenter lacks write access", "permission", perm)
+			// Give the cooldown slot back. It was claimed synchronously in
+			// dispatchCommentTrigger (before a token existed to check
+			// permissions with), so leaving it consumed would let any
+			// unauthorized commenter lock a maintainer out of /nitpick for the
+			// cooldown window just by typing it first.
+			h.releaseTriggerCooldown(repo, prNum)
 			return
 		}
 		log.Debug("commenter authorized", "permission", perm)
@@ -728,7 +759,7 @@ func (h *Handler) handleCommentTriggerAsync(ctx context.Context, log *slog.Logge
 		HeadSHA:         pr.HeadSHA,
 		InstallID:       installID,
 		BaseRef:         pr.BaseRef,
-		HeadIsUntrusted: pr.IsFork(),
+		HeadIsUntrusted: pr.HeadIsUntrusted(),
 	})
 }
 
@@ -877,9 +908,11 @@ func (h *Handler) reviewPR(ctx context.Context, log *slog.Logger, t reviewTarget
 		ContextFiles:   contextFiles,
 		RepoGuidelines: repoNotes,
 	})
-	// Record spend before the error check: a failed call can still have
-	// burned input tokens upstream of the failure, and a review that keeps
-	// erroring must not be able to spin past the cap for free.
+	// Recorded before the error check, and it is load-bearing: the Anthropic
+	// provider reports usage even when parsing its response fails, because
+	// the API call was already billed by that point. Skipping this on the
+	// error path would let a provider stuck in a parse-failure loop bill
+	// indefinitely while the rolling ceiling read $0.00.
 	h.recordSpend(repo, res.CostUSD)
 	if err != nil {
 		// Per-PR errors should not crash the server — they're already

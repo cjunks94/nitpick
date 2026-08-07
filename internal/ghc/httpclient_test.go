@@ -179,21 +179,28 @@ func TestRepoPermission_FailsClosed(t *testing.T) {
 	}
 }
 
-func TestPRDetails_IsFork(t *testing.T) {
+// Fails closed: only a positively confirmed same-repo PR is trusted.
+//
+// The unknown cases are the point. GitHub sends head.repo: null when the
+// contributor deletes their fork after opening the PR, but the head commit
+// stays reachable through the base repo -- so treating an empty head as
+// same-repo would read fork-authored .nitpick.yaml as trusted config.
+func TestPRDetails_HeadIsUntrusted(t *testing.T) {
 	tests := []struct {
 		name string
 		pr   PRDetails
 		want bool
 	}{
-		{"same repo", PRDetails{BaseRepo: "o/r", HeadRepo: "o/r"}, false},
-		{"fork", PRDetails{BaseRepo: "o/r", HeadRepo: "fork/r"}, true},
-		{"deleted head repo is not treated as a fork", PRDetails{BaseRepo: "o/r", HeadRepo: ""}, false},
-		{"unknown base is not treated as a fork", PRDetails{BaseRepo: "", HeadRepo: "fork/r"}, false},
+		{"same repo is trusted", PRDetails{BaseRepo: "o/r", HeadRepo: "o/r"}, false},
+		{"fork is untrusted", PRDetails{BaseRepo: "o/r", HeadRepo: "fork/r"}, true},
+		{"deleted head repo is untrusted", PRDetails{BaseRepo: "o/r", HeadRepo: ""}, true},
+		{"unknown base is untrusted", PRDetails{BaseRepo: "", HeadRepo: "fork/r"}, true},
+		{"both unknown is untrusted", PRDetails{}, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := tt.pr.IsFork(); got != tt.want {
-				t.Errorf("IsFork() = %v, want %v", got, tt.want)
+			if got := tt.pr.HeadIsUntrusted(); got != tt.want {
+				t.Errorf("HeadIsUntrusted() = %v, want %v", got, tt.want)
 			}
 		})
 	}

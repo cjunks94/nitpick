@@ -147,9 +147,22 @@ Comment-triggered reviews **bypass the head-SHA dedup** (the user is explicitly 
 ## Operational notes
 
 - **Cost ceiling per PR**: built-in skip at 1000 added+deleted lines. Edit `MaxLinesPerPR` in `internal/server/webhook.go` to change.
+- **Spend ceiling**: rolling $5/hour across all installations, plus 4 concurrent reviews and a 32-deep queue that sheds beyond that. In-memory, so it resets on restart — a fail-safe, not accounting. Tune via `MaxSpendPerHourUSD` on the `Handler`.
+- **`/nitpick` requires write access** on the repo, plus a 60s per-PR cooldown. Without that gate, anyone able to comment on a public repo's PR could spend your Anthropic key.
 - **Skips by default**: drafts, dependabot, renovate, anything from `Type: Bot` accounts, and PRs the server already reviewed at the same head SHA within the last hour.
 - **Dedup is in-memory**: lost on restart. If Railway redeploys mid-PR, the next push will trigger a fresh review. Add persistence (Postgres) only if duplicate posts become a real problem.
-- **SIGTERM**: handled. Railway's 30s shutdown grace is enough to let in-flight reviews finish.
+
+### ⚠️ Set a draining window or the graceful shutdown does nothing
+
+nitpick returns `202` immediately and runs the review in a detached goroutine, then drains those goroutines for up to 45s on `SIGTERM` so a redeploy doesn't kill reviews mid-LLM-call (billed, nothing posted).
+
+**Railway's default gap between `SIGTERM` and `SIGKILL` is 0 seconds.** Out of the box the process is killed instantly and no drain of any length can run. Set the draining window to at least **60s** (10s HTTP shutdown + 45s review drain, plus headroom) by any of:
+
+- Service variable: `RAILWAY_DEPLOYMENT_DRAINING_SECONDS=60`
+- Service **Settings → Deploy → Draining Time**
+- `railway.json`: `"deploy": { "drainingSeconds": 60 }`
+
+Verify it took by redeploying while a review is in flight and looking for `all in-flight reviews completed` in the logs. If you instead see the process vanish with no `shutdown complete` line, the window isn't configured.
 - **Webhook redelivery**: GitHub will retry on non-2xx. We respond 202 fast and process async — even a 30s LLM review doesn't risk a retry.
 - **Logs**: structured JSON to stdout (`log/slog`). Railway parses these into searchable fields.
 - **Updating**: `git push` to main; Railway redeploys automatically if you connected the GitHub source. Tag a release (`git tag v0.x.y`) only for milestone snapshots — Railway doesn't track tags.

@@ -218,3 +218,34 @@ func TestFetchContextFiles_SortsByChangeWeightDescending(t *testing.T) {
 // the package that uses these — keeps the build clean across refactors.
 var _ = json.Marshal
 var _ = base64.StdEncoding
+// configRef governs whether a PR can supply its own reviewer instructions via
+// .nitpick.yaml. The unknown-origin cases must fail closed: GitHub sends
+// head.repo: null once a contributor deletes their fork, and the head commit
+// stays readable through the base repo.
+func TestReviewTarget_UnknownHeadOriginIsUntrusted(t *testing.T) {
+	tests := []struct {
+		name     string
+		headRepo string
+		baseRepo string
+		wantRef  string
+	}{
+		{"same repo reads its own head", "o/r", "o/r", "deadbeef"},
+		{"fork reads the base branch", "fork/r", "o/r", "main"},
+		{"deleted fork reads the base branch", "", "o/r", "main"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			target := reviewTarget{
+				HeadSHA: "deadbeef",
+				BaseRef: "main",
+				HeadIsUntrusted: ghc.PRDetails{
+					HeadRepo: tt.headRepo,
+					BaseRepo: tt.baseRepo,
+				}.HeadIsUntrusted(),
+			}
+			if got := configRef(target); got != tt.wantRef {
+				t.Errorf("configRef() = %q, want %q", got, tt.wantRef)
+			}
+		})
+	}
+}

@@ -89,9 +89,15 @@ func Run(cfg Config) error {
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), httpShutdownGrace)
 	defer cancel()
-	if err := srv.Shutdown(shutdownCtx); err != nil {
-		logger.Error("shutdown", "err", err)
-		return err
+	// Deliberately not an early return. Shutdown's usual error is
+	// DeadlineExceeded, raised when one slow client holds a connection open
+	// past httpShutdownGrace — and returning there would skip the drain
+	// below, killing every in-flight review. That is the exact failure this
+	// whole section exists to prevent, so a stuck HTTP client must not be
+	// able to cause it.
+	shutdownErr := srv.Shutdown(shutdownCtx)
+	if shutdownErr != nil {
+		logger.Error("http shutdown", "err", shutdownErr)
 	}
 
 	// srv.Shutdown only waits for HTTP handlers, and nitpick's handlers return
@@ -108,7 +114,7 @@ func Run(cfg Config) error {
 			"grace_s", int(reviewDrainGrace.Seconds()))
 	}
 	logger.Info("shutdown complete")
-	return nil
+	return shutdownErr
 }
 
 const (
@@ -119,11 +125,17 @@ const (
 	// reviewDrainGrace bounds waiting for detached review goroutines. Reviews
 	// take 5-30s, so this covers the common case with headroom.
 	//
-	// Railway sends SIGTERM then SIGKILL; the window between them is finite,
-	// so this plus httpShutdownGrace should stay under it. If reviews are
-	// routinely cut off on redeploy, shorten the provider timeout rather than
-	// growing this past the platform's kill delay — a drain longer than the
-	// SIGKILL window is a drain that never completes.
+	// IMPORTANT — this grace is only as real as the platform allows. Railway's
+	// default gap between SIGTERM and SIGKILL is ZERO seconds: without
+	// configuration the process is killed immediately and no drain of any
+	// length can run. Set RAILWAY_DEPLOYMENT_DRAINING_SECONDS (or "Draining
+	// Time" in service settings / drainingSeconds in railway.json) to at least
+	// httpShutdownGrace + reviewDrainGrace, i.e. 60s, or this code is
+	// decoration. See DEPLOY.md.
+	//
+	// If reviews are still routinely cut off, shorten the provider timeout
+	// rather than growing this past the platform's kill delay — a drain longer
+	// than the SIGKILL window is a drain that never completes.
 	reviewDrainGrace = 45 * time.Second
 )
 

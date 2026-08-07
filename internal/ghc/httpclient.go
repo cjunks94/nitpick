@@ -95,12 +95,25 @@ type PRDetails struct {
 	HeadRepo string
 }
 
-// IsFork reports whether the PR's head branch lives in a different repository
-// than its base — i.e. whether the head commit is authored by someone without
-// write access to the base repo. Config and prompt-influencing files read from
-// a fork head must be treated as untrusted.
-func (p PRDetails) IsFork() bool {
-	return p.HeadRepo != "" && p.BaseRepo != "" && p.HeadRepo != p.BaseRepo
+// HeadIsUntrusted reports whether the PR's head commit should be treated as
+// authored by someone without write access to the base repo — which governs
+// whether prompt-influencing files (`.nitpick.yaml`) may be read from it.
+//
+// Fails CLOSED. Only a positively confirmed same-repo PR is trusted; anything
+// unknown is untrusted. GitHub returns `head.repo: null` when a contributor
+// deletes their fork after opening the PR, which decodes to an empty
+// FullName. The head commit stays reachable through the base repo, so a
+// fail-open check there would happily read fork-authored config — the exact
+// case this guard exists for.
+//
+// Named for the security property rather than the git topology ("IsFork")
+// because the two differ precisely in the unknown case, and the caller needs
+// the former.
+func (p PRDetails) HeadIsUntrusted() bool {
+	if p.HeadRepo == "" || p.BaseRepo == "" {
+		return true
+	}
+	return p.HeadRepo != p.BaseRepo
 }
 
 // FetchPR returns the current state of a PR. Used by triggers that don't

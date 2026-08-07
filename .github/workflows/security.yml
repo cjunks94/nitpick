@@ -24,6 +24,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          # See the note on the gitleaks job: no step needs git auth after
+          # checkout, so don't leave GITHUB_TOKEN in .git/config.
+          persist-credentials: false
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
@@ -52,6 +56,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          # See the note on the gitleaks job: no step needs git auth after
+          # checkout, so don't leave GITHUB_TOKEN in .git/config.
+          persist-credentials: false
       - uses: actions/setup-go@v6
         with:
           go-version: stable
@@ -71,6 +79,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          # See the note on the gitleaks job: no step needs git auth after
+          # checkout, so don't leave GITHUB_TOKEN in .git/config.
+          persist-credentials: false
       - uses: actions/setup-go@v6
         with:
           go-version: stable
@@ -102,6 +114,10 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
+          # actions/checkout writes GITHUB_TOKEN into .git/config by default.
+          # No step here uses git auth after checkout, so leaving the token on
+          # disk only widens what a compromised tool in a later step can read.
+          persist-credentials: false
       # SHA-pinned: third-party action on a floating major tag is a
       # supply-chain risk — the maintainer can move v2 to any commit
       # at any time. This SHA equals the v2.3.9 release. Dependabot

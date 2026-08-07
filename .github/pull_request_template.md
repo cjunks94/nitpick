@@ -20,6 +20,6 @@ Closes #<issue>
 
 ## Checklist
 - [ ] No secrets in code
-- [ ] Types/JSDoc complete (no `any` without justification)
+- [ ] Exported identifiers have doc comments; no bare `interface{}`/`any` without justification
 - [ ] Error handling complete
 - [ ] Docs updated if needed
