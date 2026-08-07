@@ -249,3 +249,45 @@ func TestReviewTarget_UnknownHeadOriginIsUntrusted(t *testing.T) {
 		})
 	}
 }
+
+// End-to-end guard on the context path: a credentials file touched by the diff
+// must never be fetched, and a key hardcoded in an ordinary source file must be
+// masked before it reaches the provider.
+func TestFetchContextFiles_SecretsNeverReachTheProvider(t *testing.T) {
+	const liveKey = "sk_live_" + "4eC39HqLyjWDarjtT1zdp7dc"
+	srv := fakeGitHub(t, map[string]string{
+		".env":      "STRIPE_KEY=" + liveKey + "\nDEBUG=true\n",
+		"config.go": "package config\n\nconst k = \"" + liveKey + "\"\n",
+		"main.go":   "package main\n\nfunc main() {}\n",
+	})
+	defer srv.Close()
+	client := &ghc.HTTPClient{BaseURL: srv.URL, Token: "t", HTTPClient: srv.Client()}
+
+	hunks := []diff.Hunk{
+		{File: ".env", Lines: []diff.HunkLine{{Kind: diff.LineAdded, Content: "x"}}},
+		{File: "config.go", Lines: []diff.HunkLine{{Kind: diff.LineAdded, Content: "x"}}},
+		{File: "main.go", Lines: []diff.HunkLine{{Kind: diff.LineAdded, Content: "x"}}},
+	}
+	got := fetchContextFiles(context.Background(), silentLogger(), client, "owner/repo", "sha", hunks)
+
+	for _, cf := range got {
+		if cf.Path == ".env" {
+			t.Error(".env was fetched as a context file; it must be denied outright")
+		}
+		if strings.Contains(string(cf.Content), liveKey) {
+			t.Errorf("live key survived into context file %q", cf.Path)
+		}
+	}
+	// The ordinary files must still be present — this guard must not cost
+	// review signal on files that merely happen to mention a key.
+	paths := map[string]bool{}
+	for _, cf := range got {
+		paths[cf.Path] = true
+	}
+	if !paths["main.go"] {
+		t.Error("main.go should still be fetched")
+	}
+	if !paths["config.go"] {
+		t.Error("config.go should still be fetched, with the key masked")
+	}
+}

@@ -20,6 +20,7 @@ import (
 	"github.com/cjunks94/nitpick/internal/ghapp"
 	"github.com/cjunks94/nitpick/internal/ghc"
 	"github.com/cjunks94/nitpick/internal/provider"
+	"github.com/cjunks94/nitpick/internal/secrets"
 )
 
 // Webhook payload subset — only the fields we read. GitHub sends much more
@@ -64,7 +65,7 @@ type issueCommentEvent struct {
 		User actor  `json:"user"`
 	} `json:"comment"`
 	Issue struct {
-		Number      int  `json:"number"`
+		Number      int `json:"number"`
 		PullRequest *struct {
 			URL string `json:"url"`
 		} `json:"pull_request"` // non-nil iff this comment is on a PR (not an issue)
@@ -283,19 +284,19 @@ type spendEntry struct {
 func NewHandler(secret string, ts *ghapp.InstallationTokenSource, p provider.Provider, logger *slog.Logger) *Handler {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Handler{
-		WebhookSecret:                secret,
-		TokenSource:                  ts,
-		Provider:                     p,
-		MaxLinesPerPR:                1000,
-		SkipUserLogins:               []string{"dependabot[bot]", "renovate[bot]"},
-		Logger:                       logger,
-		TriggerCooldown:              defaultTriggerCooldown,
-		MaxSpendPerHourUSD:           defaultMaxSpendPerHourUSD,
-		seen:                         make(map[string]time.Time),
-		lastTrigger:                  make(map[string]time.Time),
-		sem:                          make(chan struct{}, defaultMaxConcurrentReviews),
-		baseCtx:                      ctx,
-		cancelBase:                   cancel,
+		WebhookSecret:      secret,
+		TokenSource:        ts,
+		Provider:           p,
+		MaxLinesPerPR:      1000,
+		SkipUserLogins:     []string{"dependabot[bot]", "renovate[bot]"},
+		Logger:             logger,
+		TriggerCooldown:    defaultTriggerCooldown,
+		MaxSpendPerHourUSD: defaultMaxSpendPerHourUSD,
+		seen:               make(map[string]time.Time),
+		lastTrigger:        make(map[string]time.Time),
+		sem:                make(chan struct{}, defaultMaxConcurrentReviews),
+		baseCtx:            ctx,
+		cancelBase:         cancel,
 	}
 }
 
@@ -643,7 +644,7 @@ func (h *Handler) dispatchCommentTrigger(w http.ResponseWriter, log *slog.Logger
 		return
 	}
 	if t.InstallID == 0 {
-		log.Warn(t.Source+" with no installation id; ignoring")
+		log.Warn(t.Source + " with no installation id; ignoring")
 		w.WriteHeader(http.StatusAccepted)
 		return
 	}
@@ -901,6 +902,21 @@ func (h *Handler) reviewPR(ctx context.Context, log *slog.Logger, t reviewTarget
 		return
 	}
 
+	// Strip credentials from the diff before anything leaves the process.
+	// Every changed line goes to the provider, so a PR that commits a .env
+	// would otherwise send it verbatim — review.ignore_paths was the only
+	// guard, and it is opt-in, so the default configuration leaked.
+	//
+	// Secrets-shaped files keep their structure with values replaced rather
+	// than being dropped: "you committed a .env" is the most valuable finding
+	// nitpick could make here, and silently removing the file would throw it
+	// away.
+	hunks, redactedLines, redactedFiles := secrets.SanitizeHunks(hunks)
+	if redactedLines > 0 {
+		log.Warn("redacted secrets from diff before sending to provider",
+			"lines", redactedLines, "files", redactedFiles)
+	}
+
 	contextFiles := fetchContextFiles(ctx, log, client, repo, headSHA, hunks)
 
 	res, err := h.Provider.Review(ctx, provider.ReviewRequest{
@@ -1095,6 +1111,13 @@ var contextDenyFilenames = map[string]bool{
 // repos / OSes do uppercase) but case-sensitive on basenames (lockfile
 // names are stable).
 func isContextDenied(path string) bool {
+	// Credentials files are dropped from context outright rather than
+	// redacted. Context exists to explain surrounding code, and a secrets
+	// file explains nothing — it is all risk and no review signal. (The diff
+	// path keeps them, redacted, so the bot can still flag the commit.)
+	if secrets.IsSensitivePath(path) {
+		return true
+	}
 	if contextDenyFilenames[filepath.Base(path)] {
 		return true
 	}
@@ -1185,6 +1208,14 @@ func fetchContextFiles(ctx context.Context, log *slog.Logger, client *ghc.HTTPCl
 			log.Debug("context budget exhausted; stopping fetch",
 				"so_far_bytes", totalBytes, "cap", maxContextTotalBytes, "remaining_files", len(paths)-len(out))
 			break
+		}
+		// Second line of defence. The path deny-list above catches files that
+		// are credentials by convention; this catches a key hardcoded inside
+		// an ordinary source file, which no path rule can know about.
+		content, redacted := secrets.RedactBytes(content)
+		if redacted > 0 {
+			log.Warn("redacted secrets from context file",
+				"path", p, "lines", redacted)
 		}
 		out = append(out, provider.ContextFile{Path: p, Content: content})
 		totalBytes += len(content)

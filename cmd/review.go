@@ -12,6 +12,7 @@ import (
 	"github.com/cjunks94/nitpick/internal/diff"
 	"github.com/cjunks94/nitpick/internal/ghc"
 	"github.com/cjunks94/nitpick/internal/provider"
+	"github.com/cjunks94/nitpick/internal/secrets"
 )
 
 // Review runs the nitpick review subcommand against a single PR.
@@ -61,6 +62,16 @@ func Review(ctx context.Context, args []string) error {
 		if d := before - len(hunks); d > 0 {
 			fmt.Fprintf(os.Stderr, "ignored %d hunk(s) by .nitpick.yaml ignore_paths\n", d)
 		}
+	}
+
+	// Same guard as the serve path: the diff goes to the provider verbatim,
+	// so credentials in it must be masked before the call. ignore_paths is
+	// opt-in and cannot be relied on as the only defence.
+	hunks, redactedLines, redactedFiles := secrets.SanitizeHunks(hunks)
+	if redactedLines > 0 {
+		fmt.Fprintf(os.Stderr,
+			"nitpick: redacted %d line(s) across %d file(s) before sending to the provider\n",
+			redactedLines, redactedFiles)
 	}
 
 	p, err := provider.New(*providerName, cfg.Model)
