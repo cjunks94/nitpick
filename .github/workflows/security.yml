@@ -3,8 +3,12 @@ name: security
 on:
   push:
     branches: [main]
+  # No branch filter: a `branches: [main]` filter here means a stacked PR
+  # (one targeting another feature branch rather than main) gets NO checks at
+  # all, which is precisely the case where you most want them — the base is
+  # itself unreviewed. Observed on PR #7, which reported only a skipped
+  # third-party check.
   pull_request:
-    branches: [main]
   schedule:
     # Mondays 06:00 UTC — catches new CVEs published over the weekend
     - cron: '0 6 * * 1'
