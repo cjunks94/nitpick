@@ -23,7 +23,7 @@ jobs:
     name: build + verify modules
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           # See the note on the gitleaks job: no step needs git auth after
           # checkout, so don't leave GITHUB_TOKEN in .git/config.
@@ -55,7 +55,7 @@ jobs:
     name: govulncheck (Go CVEs in deps + stdlib)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           # See the note on the gitleaks job: no step needs git auth after
           # checkout, so don't leave GITHUB_TOKEN in .git/config.
@@ -78,7 +78,7 @@ jobs:
     name: gosec (static security analysis)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           # See the note on the gitleaks job: no step needs git auth after
           # checkout, so don't leave GITHUB_TOKEN in .git/config.
@@ -111,7 +111,7 @@ jobs:
       contents: read
       pull-requests: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           # actions/checkout writes GITHUB_TOKEN into .git/config by default.
