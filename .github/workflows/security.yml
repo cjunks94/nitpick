@@ -28,7 +28,7 @@ jobs:
           # See the note on the gitleaks job: no step needs git auth after
           # checkout, so don't leave GITHUB_TOKEN in .git/config.
           persist-credentials: false
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
@@ -60,7 +60,7 @@ jobs:
           # See the note on the gitleaks job: no step needs git auth after
           # checkout, so don't leave GITHUB_TOKEN in .git/config.
           persist-credentials: false
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version: stable
           cache: true
@@ -83,7 +83,7 @@ jobs:
           # See the note on the gitleaks job: no step needs git auth after
           # checkout, so don't leave GITHUB_TOKEN in .git/config.
           persist-credentials: false
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version: stable
           cache: true
