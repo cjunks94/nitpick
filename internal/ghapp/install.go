@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 // InstallationTokenSource mints + caches installation tokens. Tokens are
@@ -71,7 +73,12 @@ func (s *InstallationTokenSource) Token(ctx context.Context, installationID int6
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusCreated {
-		return "", fmt.Errorf("installation token exchange: HTTP %d: %s", resp.StatusCode, string(body))
+		// Truncated deliberately: this string is logged, and the success shape
+		// of this endpoint's body is {"token": "ghs_..."}. A future GitHub
+		// change that returns 200 instead of 201 would otherwise write a live
+		// installation token straight into the log stream.
+		return "", fmt.Errorf("installation token exchange: HTTP %d: %s",
+			resp.StatusCode, redactTokens(body, 300))
 	}
 
 	var out struct {
@@ -89,4 +96,22 @@ func (s *InstallationTokenSource) Token(ctx context.Context, installationID int6
 	s.cache[installationID] = cachedToken{token: out.Token, expiresAt: out.ExpiresAt}
 	s.mu.Unlock()
 	return out.Token, nil
+}
+
+// ghsTokenRE matches a GitHub installation access token. The "ghs_" prefix is
+// stable and documented; the suffix is base62 of varying length.
+var ghsTokenRE = regexp.MustCompile(`gh[pousr]_[A-Za-z0-9]{16,}`)
+
+// redactTokens masks any GitHub token found in an API response body and caps
+// the result at n bytes on a rune boundary. Applied to error strings before
+// they reach the log stream.
+func redactTokens(body []byte, n int) string {
+	s := ghsTokenRE.ReplaceAllString(string(body), "[REDACTED]")
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n] + "..."
 }

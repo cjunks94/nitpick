@@ -8,7 +8,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/cjunks94/nitpick/internal/provider"
 )
@@ -18,6 +21,36 @@ import (
 // distinguish expected absence (no .nitpick.yaml, file deleted in PR)
 // from auth, rate-limit, or transport failures that warrant a warning.
 var ErrFileNotFound = errors.New("file not found")
+
+// ErrUnsafePath is returned by FetchFile when the requested path contains a
+// traversal segment. Repository-relative paths never legitimately need "..",
+// and the Contents API resolves them server-side, so we reject rather than
+// hope GitHub normalizes the way we expect.
+var ErrUnsafePath = errors.New("unsafe repository path")
+
+// escapePath percent-encodes each segment of a repository-relative path so it
+// can be interpolated into a Contents API URL. Path segments come from the
+// unified diff — i.e. from the PR author — so they must be treated as hostile
+// input. Without escaping:
+//
+//   - a "?" in the filename opens a query string, letting the author override
+//     the ?ref= parameter and steer the fetch at an arbitrary git ref;
+//   - a "#" (e.g. a "C#/Program.cs" directory, which needs no malice at all)
+//     turns the rest of the URL into a fragment, silently dropping ?ref= so
+//     GitHub serves the file from the default branch instead of the PR head.
+//
+// url.PathEscape is applied per segment so "/" separators survive.
+func escapePath(p string) (string, error) {
+	segments := strings.Split(p, "/")
+	out := make([]string, 0, len(segments))
+	for _, seg := range segments {
+		if seg == ".." {
+			return "", fmt.Errorf("%q: %w", p, ErrUnsafePath)
+		}
+		out = append(out, url.PathEscape(seg))
+	}
+	return strings.Join(out, "/"), nil
+}
 
 // HTTPClient calls the GitHub REST API directly using an installation token.
 // Used by `nitpick serve` where the gh CLI isn't available (Railway container).
@@ -45,14 +78,42 @@ func NewHTTPClient(token string) *HTTPClient {
 // webhook (e.g. a /nitpick comment). All fields nitpick keys off live here;
 // extending requires updating both the struct and the JSON shape below.
 type PRDetails struct {
-	Number      int
-	HeadSHA     string
-	Draft       bool
-	Additions   int
-	Deletions   int
-	UserLogin   string
-	UserType    string // User | Bot
-	BaseRepo    string // owner/name
+	Number    int
+	HeadSHA   string
+	Draft     bool
+	Additions int
+	Deletions int
+	UserLogin string
+	UserType  string // User | Bot
+	BaseRepo  string // owner/name
+	// BaseRef is the branch the PR targets ("main"). Used as the trusted ref
+	// for reading .nitpick.yaml when the PR comes from a fork.
+	BaseRef string
+	// HeadRepo is the owner/name the head branch lives in. Differs from
+	// BaseRepo exactly when the PR originates from a fork, which is the
+	// signal nitpick uses to decide whether head-SHA config is trustworthy.
+	HeadRepo string
+}
+
+// HeadIsUntrusted reports whether the PR's head commit should be treated as
+// authored by someone without write access to the base repo — which governs
+// whether prompt-influencing files (`.nitpick.yaml`) may be read from it.
+//
+// Fails CLOSED. Only a positively confirmed same-repo PR is trusted; anything
+// unknown is untrusted. GitHub returns `head.repo: null` when a contributor
+// deletes their fork after opening the PR, which decodes to an empty
+// FullName. The head commit stays reachable through the base repo, so a
+// fail-open check there would happily read fork-authored config — the exact
+// case this guard exists for.
+//
+// Named for the security property rather than the git topology ("IsFork")
+// because the two differ precisely in the unknown case, and the caller needs
+// the former.
+func (p PRDetails) HeadIsUntrusted() bool {
+	if p.HeadRepo == "" || p.BaseRepo == "" {
+		return true
+	}
+	return p.HeadRepo != p.BaseRepo
 }
 
 // FetchPR returns the current state of a PR. Used by triggers that don't
@@ -84,9 +145,13 @@ func (c *HTTPClient) FetchPR(ctx context.Context, repo string, pr int) (PRDetail
 		Additions int  `json:"additions"`
 		Deletions int  `json:"deletions"`
 		Head      struct {
-			SHA string `json:"sha"`
+			SHA  string `json:"sha"`
+			Repo struct {
+				FullName string `json:"full_name"`
+			} `json:"repo"`
 		} `json:"head"`
 		Base struct {
+			Ref  string `json:"ref"`
 			Repo struct {
 				FullName string `json:"full_name"`
 			} `json:"repo"`
@@ -108,7 +173,78 @@ func (c *HTTPClient) FetchPR(ctx context.Context, repo string, pr int) (PRDetail
 		UserLogin: raw.User.Login,
 		UserType:  raw.User.Type,
 		BaseRepo:  raw.Base.Repo.FullName,
+		BaseRef:   raw.Base.Ref,
+		HeadRepo:  raw.Head.Repo.FullName,
 	}, nil
+}
+
+// Permission levels returned by the collaborator-permission endpoint, ordered
+// least to most privileged. GitHub collapses "maintain" and "triage" into this
+// same field, so the set below is what the API can actually emit.
+const (
+	PermNone   = "none"
+	PermRead   = "read"
+	PermTriage = "triage"
+	PermWrite  = "write"
+	PermAdmin  = "admin"
+)
+
+// CanWrite reports whether a permission string grants push access. Used to
+// gate the /nitpick command: anyone can *comment* on a public repo's PR, but
+// only someone who could push should be able to spend the operator's LLM
+// budget.
+func CanWrite(permission string) bool {
+	switch permission {
+	case PermWrite, PermAdmin, "maintain":
+		return true
+	default:
+		return false
+	}
+}
+
+// RepoPermission returns the permission level a user holds on a repository:
+// one of none | read | triage | write | admin. A 403/404 from this endpoint
+// means the installation can't see the collaborator list or the user isn't a
+// collaborator; both are reported as PermNone rather than an error so the
+// caller fails closed.
+func (c *HTTPClient) RepoPermission(ctx context.Context, repo, username string) (string, error) {
+	if username == "" {
+		return PermNone, nil
+	}
+	u := fmt.Sprintf("%s/repos/%s/collaborators/%s/permission",
+		c.BaseURL, repo, url.PathEscape(username))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return PermNone, err
+	}
+	req.Header.Set("Authorization", "token "+c.Token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return PermNone, fmt.Errorf("fetch repo permission: %w", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusForbidden {
+		// Not a collaborator, or the App lacks the metadata scope. Fail closed.
+		return PermNone, nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		return PermNone, fmt.Errorf("fetch repo permission: HTTP %d: %s",
+			resp.StatusCode, truncate(string(body), 300))
+	}
+	var raw struct {
+		Permission string `json:"permission"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return PermNone, fmt.Errorf("parse permission response: %w", err)
+	}
+	if raw.Permission == "" {
+		return PermNone, nil
+	}
+	return raw.Permission, nil
 }
 
 // FetchFile returns the raw contents of a file at a given commit SHA. Used
@@ -118,8 +254,15 @@ func (c *HTTPClient) FetchPR(ctx context.Context, repo string, pr int) (PRDetail
 // exist at that ref (e.g. file was deleted in the PR, or it's a new file
 // the API resolves differently).
 func (c *HTTPClient) FetchFile(ctx context.Context, repo, sha, path string) ([]byte, error) {
-	url := fmt.Sprintf("%s/repos/%s/contents/%s?ref=%s", c.BaseURL, repo, path, sha)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	escaped, err := escapePath(path)
+	if err != nil {
+		return nil, err
+	}
+	// Query built with url.Values rather than string concatenation so a "?"
+	// or "&" surviving inside a segment can't graft extra parameters on.
+	u := fmt.Sprintf("%s/repos/%s/contents/%s?%s",
+		c.BaseURL, repo, escaped, url.Values{"ref": {sha}}.Encode())
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -201,9 +344,25 @@ func (c *HTTPClient) PostReview(ctx context.Context, repo string, pr int, commen
 	return nil
 }
 
+// truncate caps s at n bytes without splitting a multi-byte rune. These
+// strings end up in error messages that are JSON-encoded into slog output; a
+// half-rune would render as U+FFFD noise at best.
 func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
-	return s[:n] + "..."
+	return TruncateBytes(s, n) + "..."
+}
+
+// TruncateBytes returns the longest prefix of s that is at most n bytes and
+// ends on a rune boundary. Exported because the server applies the same cap to
+// .nitpick.yaml context_notes before handing them to the provider.
+func TruncateBytes(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
 }

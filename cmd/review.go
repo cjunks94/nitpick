@@ -12,6 +12,7 @@ import (
 	"github.com/cjunks94/nitpick/internal/diff"
 	"github.com/cjunks94/nitpick/internal/ghc"
 	"github.com/cjunks94/nitpick/internal/provider"
+	"github.com/cjunks94/nitpick/internal/secrets"
 )
 
 // Review runs the nitpick review subcommand against a single PR.
@@ -40,7 +41,11 @@ func Review(ctx context.Context, args []string) error {
 			return fmt.Errorf("detect repo (pass --repo to override): %w", derr)
 		}
 		*repo = detected
-	} else if _, _, perr := ghc.ParseRepoArg(*repo); perr != nil {
+	}
+	// Validate on both paths so every downstream `gh` invocation (FetchDiff,
+	// PostReview, PostIssueComment) sees an owner/name it can trust — the
+	// #nosec annotations there depend on it.
+	if _, _, perr := ghc.ParseRepoArg(*repo); perr != nil {
 		return perr
 	}
 
@@ -63,15 +68,34 @@ func Review(ctx context.Context, args []string) error {
 		}
 	}
 
+	// Same guard as the serve path: the diff goes to the provider verbatim,
+	// so credentials in it must be masked before the call. ignore_paths is
+	// opt-in and cannot be relied on as the only defence.
+	hunks, redactedLines, redactedFiles := secrets.SanitizeHunks(hunks)
+	if redactedLines > 0 {
+		fmt.Fprintf(os.Stderr,
+			"nitpick: redacted %d line(s) across %d file(s) before sending to the provider\n",
+			redactedLines, redactedFiles)
+	}
+
 	p, err := provider.New(*providerName, cfg.Model)
 	if err != nil {
 		return err
 	}
 
+	// context_notes goes to the provider as a system block. Redact it under
+	// the same rule as the diff: nothing leaves the process with a credential
+	// in it. Copy first so the loaded config is not mutated.
+	reviewCfg := cfg.Review
+	if redacted, n := secrets.RedactBytes([]byte(reviewCfg.ContextNotes)); n > 0 {
+		fmt.Fprintf(os.Stderr, "nitpick: redacted %d line(s) of context_notes before sending to the provider\n", n)
+		reviewCfg.ContextNotes = string(redacted)
+	}
+
 	start := time.Now()
 	result, err := p.Review(ctx, provider.ReviewRequest{
 		Hunks:  hunks,
-		Config: cfg.Review,
+		Config: reviewCfg,
 	})
 	if err != nil {
 		return fmt.Errorf("review: %w", err)

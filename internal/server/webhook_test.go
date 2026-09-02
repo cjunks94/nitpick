@@ -23,7 +23,9 @@ func silentLogger() *slog.Logger {
 }
 
 // fakeGitHub stands in for the GitHub Contents API. Routes:
-//   GET /repos/{owner}/{repo}/contents/{path}?ref={sha}  → returns raw bytes
+//
+//	GET /repos/{owner}/{repo}/contents/{path}?ref={sha}  → returns raw bytes
+//
 // Returns 200 with raw content for paths in the seeded map, 404 otherwise.
 func fakeGitHub(t *testing.T, files map[string]string) *httptest.Server {
 	t.Helper()
@@ -141,10 +143,10 @@ func TestFetchContextFiles_GracefulOn404(t *testing.T) {
 func TestFetchContextFiles_FiltersDeniedExtensionsAndFilenames(t *testing.T) {
 	srv := fakeGitHub(t, map[string]string{
 		"scripts/health.gd":     "package; func health()",
-		"scripts/health.gd.uid": "uid://abc",       // denied by extension
-		"go.sum":                "sha256-hash",     // denied by basename
-		"yarn.lock":             "{}",              // denied by basename
-		"bundle.min.js":         "var x=1;",        // denied by extension
+		"scripts/health.gd.uid": "uid://abc",   // denied by extension
+		"go.sum":                "sha256-hash", // denied by basename
+		"yarn.lock":             "{}",          // denied by basename
+		"bundle.min.js":         "var x=1;",    // denied by extension
 		"src/real.go":           "package x",
 	})
 	defer srv.Close()
@@ -178,9 +180,9 @@ func TestFetchContextFiles_FiltersDeniedExtensionsAndFilenames(t *testing.T) {
 // edges out a 200-line new test file later.
 func TestFetchContextFiles_SortsByChangeWeightDescending(t *testing.T) {
 	files := map[string]string{
-		"tiny.go":       "x",
-		"medium.go":     "x",
-		"big_test.go":   "x",
+		"tiny.go":         "x",
+		"medium.go":       "x",
+		"big_test.go":     "x",
 		"another_test.go": "x",
 	}
 	srv := fakeGitHub(t, files)
@@ -218,3 +220,77 @@ func TestFetchContextFiles_SortsByChangeWeightDescending(t *testing.T) {
 // the package that uses these — keeps the build clean across refactors.
 var _ = json.Marshal
 var _ = base64.StdEncoding
+
+// configRef governs whether a PR can supply its own reviewer instructions via
+// .nitpick.yaml. The unknown-origin cases must fail closed: GitHub sends
+// head.repo: null once a contributor deletes their fork, and the head commit
+// stays readable through the base repo.
+func TestReviewTarget_UnknownHeadOriginIsUntrusted(t *testing.T) {
+	tests := []struct {
+		name     string
+		headRepo string
+		baseRepo string
+		wantRef  string
+	}{
+		{"same repo reads its own head", "o/r", "o/r", "deadbeef"},
+		{"fork reads the base branch", "fork/r", "o/r", "main"},
+		{"deleted fork reads the base branch", "", "o/r", "main"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			target := reviewTarget{
+				HeadSHA: "deadbeef",
+				BaseRef: "main",
+				HeadIsUntrusted: ghc.PRDetails{
+					HeadRepo: tt.headRepo,
+					BaseRepo: tt.baseRepo,
+				}.HeadIsUntrusted(),
+			}
+			if got := configRef(target); got != tt.wantRef {
+				t.Errorf("configRef() = %q, want %q", got, tt.wantRef)
+			}
+		})
+	}
+}
+
+// End-to-end guard on the context path: a credentials file touched by the diff
+// must never be fetched, and a key hardcoded in an ordinary source file must be
+// masked before it reaches the provider.
+func TestFetchContextFiles_SecretsNeverReachTheProvider(t *testing.T) {
+	const liveKey = "sk_live_" + "4eC39HqLyjWDarjtT1zdp7dc"
+	srv := fakeGitHub(t, map[string]string{
+		".env":      "STRIPE_KEY=" + liveKey + "\nDEBUG=true\n",
+		"config.go": "package config\n\nconst k = \"" + liveKey + "\"\n",
+		"main.go":   "package main\n\nfunc main() {}\n",
+	})
+	defer srv.Close()
+	client := &ghc.HTTPClient{BaseURL: srv.URL, Token: "t", HTTPClient: srv.Client()}
+
+	hunks := []diff.Hunk{
+		{File: ".env", Lines: []diff.HunkLine{{Kind: diff.LineAdded, Content: "x"}}},
+		{File: "config.go", Lines: []diff.HunkLine{{Kind: diff.LineAdded, Content: "x"}}},
+		{File: "main.go", Lines: []diff.HunkLine{{Kind: diff.LineAdded, Content: "x"}}},
+	}
+	got := fetchContextFiles(context.Background(), silentLogger(), client, "owner/repo", "sha", hunks)
+
+	for _, cf := range got {
+		if cf.Path == ".env" {
+			t.Error(".env was fetched as a context file; it must be denied outright")
+		}
+		if strings.Contains(string(cf.Content), liveKey) {
+			t.Errorf("live key survived into context file %q", cf.Path)
+		}
+	}
+	// The ordinary files must still be present — this guard must not cost
+	// review signal on files that merely happen to mention a key.
+	paths := map[string]bool{}
+	for _, cf := range got {
+		paths[cf.Path] = true
+	}
+	if !paths["main.go"] {
+		t.Error("main.go should still be fetched")
+	}
+	if !paths["config.go"] {
+		t.Error("config.go should still be fetched, with the key masked")
+	}
+}

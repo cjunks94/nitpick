@@ -1,0 +1,129 @@
+name: security
+
+on:
+  push:
+    branches: [main]
+  # No branch filter: a `branches: [main]` filter here means a stacked PR
+  # (one targeting another feature branch rather than main) gets NO checks at
+  # all, which is precisely the case where you most want them — the base is
+  # itself unreviewed. Observed on PR #7, which reported only a skipped
+  # third-party check.
+  pull_request:
+  schedule:
+    # Mondays 06:00 UTC — catches new CVEs published over the weekend
+    - cron: '0 6 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    # Pinned to whatever go.mod declares — this job verifies the project
+    # actually compiles under its own minimum-supported Go.
+    name: build + verify modules
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # See the note on the gitleaks job: no step needs git auth after
+          # checkout, so don't leave GITHUB_TOKEN in .git/config.
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go mod verify
+      - run: go build ./...
+      - run: go vet ./...
+      - run: go test -coverprofile=coverage.out ./...
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v6
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          slug: cjunks94/nitpick
+          files: ./coverage.out
+          # Don't break CI if the upload fails (Codecov unreachable, token
+          # not yet provisioned, etc.)
+          fail_ci_if_error: false
+
+  govulncheck:
+    # Always run against the latest stable Go to evaluate stdlib CVEs.
+    # If we used go.mod here, a dep that rewrites "go 1.24" to "go 1.24.0"
+    # would force setup-go to install exactly 1.24.0 — semver treats
+    # bare "1.24.0" as exact, not as ">=1.24.0" — and we'd light up
+    # every stdlib CVE patched in 1.24.x.
+    name: govulncheck (Go CVEs in deps + stdlib)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # See the note on the gitleaks job: no step needs git auth after
+          # checkout, so don't leave GITHUB_TOKEN in .git/config.
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version: stable
+          cache: true
+      # Pinned: @latest can flip a green branch red mid-week if a new
+      # release lands. The vuln database itself is fetched at runtime
+      # so pinning the binary doesn't reduce CVE coverage.
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.3.0
+      - name: Run govulncheck
+        run: govulncheck ./...
+
+  gosec:
+    # Latest stable Go: gosec itself frequently bumps its minimum Go,
+    # and reading from go.mod can leave us behind.
+    name: gosec (static security analysis)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # See the note on the gitleaks job: no step needs git auth after
+          # checkout, so don't leave GITHUB_TOKEN in .git/config.
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version: stable
+          cache: true
+      # Pinned: gosec adds new lint rules on a regular cadence; an
+      # @latest install can fail a previously-clean branch when a new
+      # rule is published.
+      - name: Install gosec
+        run: go install github.com/securego/gosec/v2/cmd/gosec@v2.26.1
+      - name: Run gosec
+        run: gosec -fmt text -severity medium ./...
+
+  gitleaks:
+    name: gitleaks (secrets in git history)
+    runs-on: ubuntu-latest
+    # Dependabot PRs only modify dependency versions — they cannot
+    # introduce committed secrets, and gitleaks-action@v2 fails on them
+    # because Dependabot's GITHUB_TOKEN is read-only and the action
+    # tries to write PR comments.
+    if: github.event_name != 'pull_request' || github.actor != 'dependabot[bot]'
+    # gitleaks-action calls GET /repos/{owner}/{repo}/pulls/{n}/commits
+    # on pull_request events. The workflow's top-level permissions
+    # grant only contents: read, so this job needs an explicit
+    # pull-requests: read scope; without it the action 403s.
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          # actions/checkout writes GITHUB_TOKEN into .git/config by default.
+          # No step here uses git auth after checkout, so leaving the token on
+          # disk only widens what a compromised tool in a later step can read.
+          persist-credentials: false
+      # SHA-pinned: third-party action on a floating major tag is a
+      # supply-chain risk — the maintainer can move v2 to any commit
+      # at any time. This SHA equals the v2.3.9 release. Dependabot
+      # (github-actions ecosystem) will surface a PR to bump it when
+      # a new tag ships.
+      - name: Run gitleaks
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

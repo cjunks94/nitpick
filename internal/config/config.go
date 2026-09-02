@@ -34,6 +34,8 @@ type ReviewConfig struct {
 // paired with fs.ErrNotExist so callers can distinguish "use defaults" from
 // "parse error".
 func Load(path string) (Config, error) {
+	// #nosec G304 -- callers pass the literal repoConfigPath constant
+	// (".nitpick.yaml"); never user-controlled input at runtime.
 	b, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {

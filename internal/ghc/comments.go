@@ -92,6 +92,9 @@ func PostReview(ctx context.Context, repo string, pr int, comments []provider.Co
 		fmt.Sprintf("/repos/%s/pulls/%d/reviews", repo, pr),
 		"--input", "-",
 	}
+	// #nosec G204 -- args is built locally above with literal strings
+	// (the api path is fmt.Sprintf with int + repo from a validated source).
+	// The binary name is the literal "gh".
 	cmd := exec.CommandContext(ctx, "gh", args...)
 	cmd.Stdin = bytes.NewReader(body)
 	var stderr bytes.Buffer

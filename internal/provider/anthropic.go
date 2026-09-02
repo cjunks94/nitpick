@@ -125,23 +125,26 @@ func (a Anthropic) Review(ctx context.Context, req ReviewRequest) (ReviewResult,
 		return ReviewResult{}, fmt.Errorf("anthropic Messages.New: %w", err)
 	}
 
-	text := extractText(resp)
-	comments, err := parseFindings(text)
-	if err != nil {
-		return ReviewResult{}, fmt.Errorf("parse findings: %w (raw: %s)", err, truncate(text, 200))
-	}
-
+	// Usage is computed before parsing, and reported even when parsing fails.
+	// The API call succeeded and was billed at this point; returning a zero
+	// ReviewResult alongside a parse error would hide real spend from the
+	// server's rolling cost ceiling, so a provider stuck in a parse-failure
+	// loop could bill indefinitely while the guard read $0.00.
 	usage := TokenUsage{
 		Input:       int(resp.Usage.InputTokens) + int(resp.Usage.CacheCreationInputTokens),
 		Output:      int(resp.Usage.OutputTokens),
 		CachedInput: int(resp.Usage.CacheReadInputTokens),
 	}
+	billed := ReviewResult{Tokens: usage, CostUSD: a.cost(resp.Usage)}
 
-	return ReviewResult{
-		Comments: comments,
-		Tokens:   usage,
-		CostUSD:  a.cost(resp.Usage),
-	}, nil
+	text := extractText(resp)
+	comments, err := parseFindings(text)
+	if err != nil {
+		return billed, fmt.Errorf("parse findings: %w (raw: %s)", err, truncate(text, 200))
+	}
+
+	billed.Comments = comments
+	return billed, nil
 }
 
 // cost computes USD from the four token buckets. Cache writes are billed at
@@ -192,9 +195,12 @@ func parseFindings(text string) ([]Comment, error) {
 		findingsIdx = 0
 	}
 	start := strings.LastIndex(text[:findingsIdx+1], "{")
-	end := strings.LastIndex(text, "}")
-	if start < 0 || end <= start {
-		return nil, nil // findings key but no enclosing braces → silent
+	if start < 0 {
+		return nil, nil // findings key but no enclosing brace → silent
+	}
+	end := matchingBrace(text, start)
+	if end <= start {
+		return nil, nil // unterminated object → silent
 	}
 
 	var payload struct {
@@ -225,6 +231,47 @@ func parseFindings(text string) ([]Comment, error) {
 		})
 	}
 	return out, nil
+}
+
+// matchingBrace returns the index of the '}' that closes the '{' at start, or
+// -1 if the object never terminates. Brace counting is string-literal aware so
+// a '}' inside a finding body doesn't close the object early.
+//
+// Replaces an earlier strings.LastIndex(text, "}"), which grabbed the last
+// brace anywhere in the response. Models append trailing prose more often than
+// the prompt implies ("...}\n\nLet me know if you'd like {more detail}"), and
+// over-capturing made json.Unmarshal fail — which discarded an entire review
+// the operator had already paid for.
+func matchingBrace(s string, start int) int {
+	depth := 0
+	inString := false
+	escaped := false
+	for i := start; i < len(s); i++ {
+		c := s[i]
+		if inString {
+			switch {
+			case escaped:
+				escaped = false
+			case c == '\\':
+				escaped = true
+			case c == '"':
+				inString = false
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			inString = true
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+	return -1
 }
 
 // renderUserMessage builds the full user-side payload: optional context-files

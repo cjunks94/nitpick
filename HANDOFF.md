@@ -1,6 +1,38 @@
 # Handoff — nitpick
 
-State snapshot at v0.2.0. The original 7-step v0.1.0 plan is complete. v0.2.0 added the hosted webhook server. This doc tells the next person (or future-you) what shipped, what was tried and reverted, and what's left.
+State snapshot at v0.2.0, plus the v0.3 work listed under "Shipped since this snapshot" below. This doc tells the next person (or future-you) what shipped, what was tried and reverted, and what's left.
+
+> **This file has drifted before.** The sections below the snapshot were written at v0.2.0 and describe a smaller system than the one in `main`. Trust the code over this doc where they disagree; `README.md` is kept current. When you finish substantial work, append to the list below rather than editing the v0.2.0 body.
+
+## Shipped since this snapshot
+
+- **Multi-file context fetch** (the v0.3.x item below — done). Whole-file content for diff-referenced files at the head SHA, deny-listed and change-weight-sorted before the budget cap.
+- **`.nitpick.yaml` repo config** — `ignore_paths` and `context_notes`.
+- **`/nitpick` comment triggers** across `issue_comment`, `pull_request_review_comment`, `pull_request_review`.
+- **Per-review status comments** so silent runs are visible.
+- **Prompt v2.2 → v2.7.** ⚠️ These landed **without eval re-runs**, against the eval-gated policy in `CLAUDE.md`. `eval/REPORT.md` still reflects v2. Re-running the sweep is the highest-value outstanding chore — and it's cheap: 20 cases × 3 runs × both models ≈ **$2.16**. Note it's a re-baseline, not a v2 A/B: context files and repo notes didn't exist when the v2 numbers were measured.
+- **Security hardening + secret redaction** (see below). Several v0.4.x "operational hardening" items moved up because they turned out to be exploitable, not just untidy.
+
+### Security fixes worth not regressing
+
+Each has a regression test:
+
+| Was | Now |
+|---|---|
+| `/nitpick` fired for anyone who could comment — an unauthenticated way to spend the operator's Anthropic key on a public repo | Gated on write access, fails closed, plus a per-PR cooldown an unauthorized commenter can't consume |
+| The gate defaulted on only inside `NewHandler`, so every struct-literal `Handler` ran with it **off** | Inverted to `AllowUnauthenticatedTrigger` so the zero value is the safe one |
+| Trigger was a substring match, and every review body contains `github.com/cjunks94/nitpick` | Anchored to start-of-line; the Bot check is no longer the only thing preventing a billing loop |
+| `.nitpick.yaml` read at head SHA even for fork PRs, while `context_notes` is a MANDATORY OVERRIDE in the prompt | Fork PRs read config from the base branch; unknown head origin fails **closed** (`HeadIsUntrusted`) |
+| Diff file paths interpolated into Contents API URLs unescaped — `?` let the author override `?ref=`, `#` silently dropped it | Per-segment `url.PathEscape`, `url.Values` query, `..` rejected |
+| Reviews fanned out unbounded with no spend ceiling | 4 concurrent / 32 queued / $5 per rolling hour |
+| In-flight reviews died on every redeploy despite the SIGTERM handler | `Handler.Drain` waits on a WaitGroup, cancelling at 45s — **and needs `RAILWAY_DEPLOYMENT_DRAINING_SECONDS` set, or it's inert** |
+| A trailing `}` in model prose made `parseFindings` error out, discarding a paid review | String-literal-aware brace matching; the provider also now reports usage on parse failure so the spend ceiling sees it |
+| A committed `.env` was sent to Anthropic in full via the diff | `internal/secrets` masks it (keeping structure so the bot can still flag the commit) and drops it from context |
+
+Still open from that review (low severity, documented not fixed):
+
+- `internal/diff/diff.go` swallows removed lines starting with `--` plus a space (a deleted SQL/Lua/Haskell comment renders as `--- comment` and matches the old-file-header case). `OldLineNum` and `DiffPosition` desync for the rest of that hunk. `NewLineNum` is unaffected, so posted anchors are still correct — but `DiffPosition` is kept precisely as the fallback path, and it's silently wrong on those diffs.
+- `BuildReviewBody` sorts the caller's slice in place. No visible bug today; latent aliasing trap.
 
 ## What shipped
 
@@ -52,9 +84,10 @@ The Sonnet useful_recall plateau of 0.29 across all 3 runs suggests the same lab
 OpenAI-compatible API at ~$0.14/1M input vs Haiku's $1.00. If quality is comparable, biggest cost win available. Implementing per HANDOFF v0 plan.
 
 ### v0.4.x — Operational hardening
-- Postgres-backed dedup (current in-memory is lossy on restart)
-- Per-installation cost ceiling / monthly cap (fail-safe before runaway spend)
-- File-pattern allowlist to defeat accidentally exfiltrating `.env` or similar (mentioned in original v0 handoff, still open)
+- Postgres-backed dedup (current in-memory is lossy on restart). The trigger cooldown and the rolling spend ledger are lossy the same way and would move with it.
+- ~~Per-installation cost ceiling~~ — a rolling hourly ceiling shipped; a *persistent* monthly cap still needs storage.
+- ~~File-pattern allowlist to defeat accidentally exfiltrating `.env`~~ — shipped as `internal/secrets`: credentials files are masked in the diff (structure kept so the bot can still flag the commit) and dropped from context, plus content-level redaction for keys hardcoded in ordinary source. Covers both `serve` and the CLI.
+- Re-run the eval sweep against prompt v2.7 and commit a fresh `REPORT.md` (~$2.16). The committed numbers describe v2.
 
 ## Design decisions worth preserving
 

@@ -84,7 +84,7 @@ One install → many repos, webhook-driven. Deploy `nitpick serve` to Railway / 
 
 ## Triggers
 
-By default, nitpick reviews on PR `opened` / `synchronize` (push) / `reopened` / `ready_for_review`. To manually re-run on demand, type **`/nitpick`** (case-insensitive substring) anywhere a human can put text on a PR:
+By default, nitpick reviews on PR `opened` / `synchronize` (push) / `reopened` / `ready_for_review`. To manually re-run on demand, put **`/nitpick`** at the **start of a line** anywhere a human can put text on a PR:
 
 | Where | GitHub event |
 |---|---|
@@ -92,7 +92,46 @@ By default, nitpick reviews on PR `opened` / `synchronize` (push) / `reopened` /
 | Inline reply on a review thread (under a specific line of code) | `pull_request_review_comment` |
 | Body of a submitted review | `pull_request_review` |
 
-Manual triggers bypass the head-SHA dedup (a user typing `/nitpick` is explicitly asking) but still respect the skip rules (drafts, bot authors, oversize PRs). Requires the App to be subscribed to all three event types — see [`DEPLOY.md`](DEPLOY.md).
+Case-insensitive, leading whitespace allowed, and anything may follow (`/nitpick`, `/nitpick review`, `/nitpick please`). It must be at the start of a line — mentioning the project mid-sentence or linking `github.com/cjunks94/nitpick` won't fire a review, and neither will a quoted `> /nitpick`.
+
+Manual triggers are gated:
+
+- **The commenter needs write access** to the repo. Anyone can comment on a public repo's PR, and a review costs real money — so a stranger must not be able to spend your Anthropic budget. Fails closed if the permission can't be read.
+- **A 60s per-PR cooldown** applies. Manual triggers bypass the head-SHA dedup (a user typing `/nitpick` is explicitly asking for a fresh review), so this is what stops trigger spam. An unauthorized commenter doesn't consume the slot.
+- The usual skip rules still apply: drafts, bot authors, oversize PRs.
+
+Requires the App to be subscribed to all three event types — see [`DEPLOY.md`](DEPLOY.md).
+
+## What leaves your repo
+
+Everything nitpick reviews is sent to the configured provider (Anthropic today), so credentials are stripped before the call — on the diff and the context-file paths, on both `serve` and the `review` CLI. On by default, no configuration needed. (`review.ignore_paths` is opt-in and was never a safe place to rely on for this.)
+
+| Where | What happens | Why |
+|---|---|---|
+| Credentials file **in the diff** (`.env`, `*.pem`, `id_rsa`, `secrets.yaml`, …) | Path and line structure kept, every value replaced | "You committed a `.env`" is the most valuable finding available on that PR — dropping the file silently would throw it away |
+| Credentials file **as context** | Not fetched at all | Context exists to explain surrounding code; a credentials file explains nothing, so it's all risk and no signal |
+| Key hardcoded in **ordinary source** | The matched token is masked, the rest of the file is untouched | No path rule can know about this, so content is scanned as a second layer |
+
+Recognised: GitHub / Anthropic / OpenAI / AWS / Google / Slack / Stripe / SendGrid / npm tokens, JWTs, `user:pass@host` URLs, PEM private-key blocks, and credential-shaped assignments (`password = "…"`).
+
+Redaction is strictly line-for-line and never adds or removes a line — findings anchor on new-file line numbers, so anything that shifted them would move every comment below onto the wrong code. Detection is deliberately biased toward vendor-prefixed formats: a redactor that mangles ordinary code costs review quality on every PR, while a missed exotic secret costs nothing that wasn't already broken by committing it. Redaction counts are logged; values never are.
+
+## Cost controls
+
+`serve` is single-tenant and spends your own Anthropic key, so the failure mode it guards hardest against is an unbounded bill:
+
+| Control | Default | What it stops |
+|---|---|---|
+| Write-access gate on `/nitpick` | on | Strangers triggering reviews on public repos |
+| Per-PR trigger cooldown | 60s | `/nitpick` spam |
+| Max concurrent reviews | 4 | A webhook burst (rebasing a stack of PRs) fanning out into simultaneous LLM calls |
+| Queue depth before shedding | 32 | An unbounded backlog of expensive queued work |
+| Rolling hourly spend ceiling | $5 | Everything else — the last-resort fail-safe |
+| Max lines per PR | 1000 | Reviewing a diff no model will do well on anyway |
+
+The spend ceiling is in-memory and resets on restart, same as the dedup cache. It's a fail-safe, not accounting.
+
+> **Deploying on Railway?** The graceful-shutdown drain is inert unless you set a draining window — Railway's default `SIGTERM`→`SIGKILL` gap is **0 seconds**. See [`DEPLOY.md`](DEPLOY.md).
 
 ## Architecture
 

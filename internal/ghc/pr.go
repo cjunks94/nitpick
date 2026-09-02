@@ -61,6 +61,9 @@ func HeadSHA(ctx context.Context, repo string, pr int) (string, error) {
 }
 
 func runGH(ctx context.Context, args ...string) ([]byte, error) {
+	// #nosec G204 -- args are constructed internally by callers in this
+	// package; never sourced from untrusted input. The binary name is the
+	// literal "gh" so there's no command-injection surface.
 	cmd := exec.CommandContext(ctx, "gh", args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
