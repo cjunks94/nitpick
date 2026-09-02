@@ -41,7 +41,7 @@ jobs:
       # bare Windows dev box — so CI is the only place it actually runs.
       - run: go test -race -coverprofile=coverage.out ./...
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           slug: cjunks94/nitpick
