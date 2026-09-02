@@ -1,15 +1,15 @@
 # Eval report — `anthropic-claude-sonnet-4-6`
 
-Cases: 20  ·  Expected findings: 7  ·  Produced: 7
+Cases: 20  ·  Expected findings: 7  ·  Produced: 5
 
 | Metric | Value |
 |---|---|
-| Precision | 0.286 |
-| Recall (all) | 0.286 |
+| Precision | 0.600 |
+| Recall (all) | 0.429 |
 | Recall (critical) | 0.000 |
-| Recall (useful) | 0.143 |
-| Noise rate | 0.714 |
-| Avg $/PR | $0.0184 |
+| Recall (useful) | 0.286 |
+| Noise rate | 0.400 |
+| Avg $/PR | $0.0182 |
 
 ## Per-case
 | PR | Repo | Expected | Hits | Misses | Extras | $ |
@@ -22,13 +22,13 @@ Cases: 20  ·  Expected findings: 7  ·  Produced: 7
 | #29 | cjunks94/agentic-portfolio | 1 | 0 | 1 | 0 | $0.0152 |
 | #25 | cjunks94/agentic-portfolio | 0 | 0 | 0 | 0 | $0.0205 |
 | #56 | cjunks94/panoptrain | 1 | 0 | 1 | 0 | $0.0921 |
-| #121 | cjunks94/exportee-rails | 1 | 1 | 0 | 2 | $0.0320 |
-| #101 | cjunks94/exportee-rails | 1 | 0 | 1 | 0 | $0.0118 |
+| #121 | cjunks94/exportee-rails | 1 | 1 | 0 | 1 | $0.0297 |
+| #101 | cjunks94/exportee-rails | 1 | 1 | 0 | 0 | $0.0129 |
 | #28 | cjunks94/agentic-portfolio | 0 | 0 | 0 | 0 | $0.0047 |
 | #27 | cjunks94/agentic-portfolio | 0 | 0 | 0 | 0 | $0.0057 |
 | #59 | cjunks94/panoptrain | 1 | 0 | 1 | 0 | $0.0136 |
 | #54 | cjunks94/panoptrain | 0 | 0 | 0 | 0 | $0.0369 |
-| #117 | cjunks94/exportee-rails | 1 | 1 | 0 | 2 | $0.0233 |
+| #117 | cjunks94/exportee-rails | 1 | 1 | 0 | 0 | $0.0198 |
 | #69 | cjunks94/resume-improvements | 0 | 0 | 0 | 0 | $0.0777 |
 | #64 | cjunks94/resume-improvements | 0 | 0 | 0 | 0 | $0.0018 |
 | #57 | cjunks94/resume-improvements | 0 | 0 | 0 | 1 | $0.0037 |
@@ -47,20 +47,17 @@ Cases: 20  ·  Expected findings: 7  ·  Produced: 7
 - MISS `packages/client/src/lib/tafCurrentPeriod.ts:28` [useful/correctness] selection loop picks last in iteration order, not latest timeFrom — assumes upstream returns basePeriods sorted ascending
 
 ### #121 cjunks94/exportee-rails
-- HIT `app/services/sources/salesforce_adapter.rb:45` [useful/performance / correctness] The `extract` method accumulates all records into a Ruby Array before returning, which for large Salesforce result sets (potentially millions of rows via Restforce's lazy Enumerator) loads everything into memory at once. If callers pass the result to a streaming pipeline this defeats the purpose; consider yielding or returning the Restforce collection directly and letting callers enumerate lazily.
-- EXTRA `app/services/sources/salesforce_adapter.rb:26` [useful/N+1 / performance] `introspect_schema` calls `client.describe(sobject["name"])` once per queryable object in a loop — a Salesforce org with hundreds of objects will issue hundreds of sequential HTTP requests. Salesforce does not offer a batch describe endpoint for full field metadata, but this should be documented and ideally rate-limited or parallelised; as written it will time out or hit API limits on large orgs without warning.
-- EXTRA `app/services/sources/salesforce_adapter.rb:74` [useful/correctness] `credentials` falls back to `config` when the `"credentials"` key is absent (`connection.connection_config.fetch("credentials", config)`), meaning top-level config keys like `"instance_url"` and `"sandbox"` would be treated as credential values (username, password, etc.). The fallback should probably be `{}` or raise, not the full config hash.
+- HIT `app/services/sources/salesforce_adapter.rb:44` [useful/performance] The `extract` method accumulates all rows into a Ruby array before returning, which will load the entire Salesforce result set into memory. For large orgs this can exceed available memory; the Restforce `query` method supports lazy enumeration via `Enumerator`, so the caller could iterate without full materialization if `extract` returned an enumerator or yielded rows.
+- EXTRA `app/services/sources/salesforce_adapter.rb:27` [useful/performance] The `introspect_schema` method issues one `client.describe(name)` HTTP call per queryable object inside a `map`, creating an N+1 request pattern. Large Salesforce orgs can have hundreds of queryable sObjects, making this extremely slow; consider batching or noting the ceiling in a comment.
 
 ### #101 cjunks94/exportee-rails
-- MISS `app/controllers/api/v1/base_controller.rb:83` [useful/security] bad_request_with_message renders raw exception.message from ArgumentError; risks leaking internal context (CLAUDE.md: error messages must not leak internal details)
+- HIT `app/controllers/api/v1/base_controller.rb:82` [useful/security] Reflecting raw exception.message from ArgumentError into the API response can leak internal implementation details or stack-trace fragments; the message is set by callers throughout the codebase and not sanitized before rendering.
 
 ### #59 cjunks94/panoptrain
 - MISS `packages/client/src/lib/scheduleIdle.ts:18` [useful/correctness] setTimeout fallback hardcodes 1ms and ignores the timeoutMs parameter; docstring promises 'soon-ish' upper bound but fallback fires next tick regardless of caller intent
 
 ### #117 cjunks94/exportee-rails
-- HIT `app/services/transforms/data_frame_pipeline.rb:101` [critical/] Widgets::Builtins.const_get(widget_name.camelize) will raise NameError for any unrecognized widget name, crashing the export instead of gracefully skipping. The comment says 'fall back to row-by-row for this one transform' but there is no rescue around the const_get.
-- EXTRA `app/services/transforms/data_frame_pipeline.rb:104` [useful/] When `transformed` is empty (every row was filtered out by the fallback widget), `df.clear` is returned, but if `transformed` is non-empty and rows had heterogeneous keys after the fallback, constructing a new DataFrame from `transformed` may silently drop columns that existed in the original `df`, breaking downstream transforms that expect those columns.
-- EXTRA `app/services/exports/executor.rb:92` [useful/] `result[:bytes_written]` is compared to `max_upload_bytes` after the tempfile has already been written and before cleanup, but if `ArtifactTooLarge` is raised the tempfile is correctly unlinked in `ensure`; however the artifact attachment at line 97 happens after the size check and before the destination copy — if the attach raises, the destination copy is skipped silently, which may leave the run in an inconsistent state (artifact attached, no file copy). This is the same asymmetry present in the legacy path, but worth noting for the new path.
+- HIT `app/services/transforms/data_frame_pipeline.rb:101` [critical/] NameError raised for unknown widgets: `Widgets::Builtins.const_get(widget_name.camelize)` is not guarded with `rescue NameError`, so an unrecognized widget name that has no corresponding constant will raise an unrescued exception rather than silently returning the unchanged DataFrame or falling through gracefully. The comment says 'fall back to row-by-row for this one transform' but the fallback itself is the path that raises.
 
 ### #57 cjunks94/resume-improvements
-- EXTRA `.github/workflows/canary-build.yml:23` [critical/] actions/checkout@v6 does not exist; the latest major release is v4. This will cause all jobs referencing it to fail at runtime with a resolution error.
+- EXTRA `.github/workflows/canary-build.yml:23` [useful/nonexistent-action-version] actions/checkout@v6 does not exist; the latest stable major version is v4. This will cause all workflows to fail at runtime.
