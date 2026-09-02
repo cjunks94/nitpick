@@ -285,6 +285,124 @@ func (c *HTTPClient) FetchFile(ctx context.Context, repo, sha, path string) ([]b
 	return body, nil
 }
 
+// ExistingComment is a comment already on the PR when nitpick starts its
+// review. Path and Line are empty/zero for top-level (issue) comments, which
+// is how the summary blocks CodeRabbit posts arrive.
+type ExistingComment struct {
+	Author    string
+	Path      string
+	Line      int
+	Body      string
+	CreatedAt time.Time
+}
+
+// maxListedComments bounds how many comments we page through. A PR with more
+// than this is already unreviewable by a human; the cap keeps a pathological
+// thread from turning into an unbounded fetch and an oversized prompt.
+const maxListedComments = 200
+
+// ListReviewComments returns the inline review comments on a PR — the
+// threaded ones anchored to diff lines. These are where overlap with another
+// reviewer actually shows up, so they're what nitpick dedupes against.
+//
+// Results are capped at maxListedComments; the bool reports whether more
+// existed, so the caller can log that coverage was truncated rather than
+// silently implying it saw everything.
+func (c *HTTPClient) ListReviewComments(ctx context.Context, repo string, pr int) ([]ExistingComment, bool, error) {
+	return c.listComments(ctx,
+		fmt.Sprintf("%s/repos/%s/pulls/%d/comments", c.BaseURL, repo, pr))
+}
+
+// ListIssueComments returns the top-level (non-inline) comments on a PR.
+// CodeRabbit posts its walkthrough and summary here rather than inline.
+func (c *HTTPClient) ListIssueComments(ctx context.Context, repo string, pr int) ([]ExistingComment, bool, error) {
+	return c.listComments(ctx,
+		fmt.Sprintf("%s/repos/%s/issues/%d/comments", c.BaseURL, repo, pr))
+}
+
+func (c *HTTPClient) listComments(ctx context.Context, endpoint string) ([]ExistingComment, bool, error) {
+	const perPage = 100
+	var out []ExistingComment
+
+	for page := 1; ; page++ {
+		u := fmt.Sprintf("%s?%s", endpoint, url.Values{
+			"per_page": {fmt.Sprintf("%d", perPage)},
+			"page":     {fmt.Sprintf("%d", page)},
+		}.Encode())
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+		if err != nil {
+			return nil, false, err
+		}
+		req.Header.Set("Authorization", "token "+c.Token)
+		req.Header.Set("Accept", "application/vnd.github+json")
+		req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+
+		resp, err := c.HTTPClient.Do(req)
+		if err != nil {
+			return nil, false, fmt.Errorf("list comments: %w", err)
+		}
+		body, readErr := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if readErr != nil {
+			return nil, false, fmt.Errorf("list comments: %w", readErr)
+		}
+		if resp.StatusCode != http.StatusOK {
+			return nil, false, fmt.Errorf("list comments: HTTP %d: %s",
+				resp.StatusCode, truncate(string(body), 300))
+		}
+
+		var raw []struct {
+			Body string `json:"body"`
+			Path string `json:"path"`
+			Line int    `json:"line"`
+			User struct {
+				Login string `json:"login"`
+			} `json:"user"`
+			CreatedAt time.Time `json:"created_at"`
+		}
+		if err := json.Unmarshal(body, &raw); err != nil {
+			return nil, false, fmt.Errorf("parse comments: %w", err)
+		}
+		for _, r := range raw {
+			if len(out) >= maxListedComments {
+				return out, true, nil
+			}
+			out = append(out, ExistingComment{
+				Author:    r.User.Login,
+				Path:      r.Path,
+				Line:      r.Line,
+				Body:      r.Body,
+				CreatedAt: r.CreatedAt,
+			})
+		}
+		// A short page is the last page — GitHub fills to per_page otherwise.
+		if len(raw) < perPage {
+			return out, false, nil
+		}
+	}
+}
+
+// FilterByAuthor returns the comments authored by any of the given logins.
+// Comparison is case-insensitive: GitHub preserves login case in payloads but
+// treats names case-insensitively, and operators write "CodeRabbitAI[bot]" in
+// config as often as the lowercase form.
+func FilterByAuthor(comments []ExistingComment, logins []string) []ExistingComment {
+	if len(logins) == 0 {
+		return nil
+	}
+	want := make(map[string]bool, len(logins))
+	for _, l := range logins {
+		want[strings.ToLower(l)] = true
+	}
+	var out []ExistingComment
+	for _, c := range comments {
+		if want[strings.ToLower(c.Author)] {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
 // FetchDiff returns the unified diff for a PR via the REST API. Equivalent
 // to `gh pr diff <n>` but uses the installation token. The media type header
 // is what makes GitHub return raw diff text rather than the JSON resource.

@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 // FetchDiff returns the unified diff for the given PR.
@@ -58,6 +59,56 @@ func HeadSHA(ctx context.Context, repo string, pr int) (string, error) {
 		return "", err
 	}
 	return v.HeadRefOid, nil
+}
+
+// ListPRComments returns the existing comments on a PR via `gh api`, both
+// inline review comments and top-level issue comments. The gh-subprocess twin
+// of HTTPClient.ListReviewComments / ListIssueComments — same ExistingComment
+// shape so the CodeRabbit dedup logic works identically on both surfaces.
+//
+// --paginate makes gh follow Link headers; --slurp merges the pages into one
+// JSON array rather than emitting one array per page (which isn't valid JSON
+// as a whole document).
+func ListPRComments(ctx context.Context, repo string, pr int) ([]ExistingComment, error) {
+	endpoints := []string{
+		fmt.Sprintf("/repos/%s/pulls/%d/comments", repo, pr),
+		fmt.Sprintf("/repos/%s/issues/%d/comments", repo, pr),
+	}
+	var out []ExistingComment
+	for _, ep := range endpoints {
+		raw, err := runGH(ctx, "api", "--paginate", "--slurp", ep)
+		if err != nil {
+			return nil, fmt.Errorf("list comments %s: %w", ep, err)
+		}
+		// With --slurp the result is [[...], [...]] — one inner array per page.
+		var pages [][]struct {
+			Body string `json:"body"`
+			Path string `json:"path"`
+			Line int    `json:"line"`
+			User struct {
+				Login string `json:"login"`
+			} `json:"user"`
+			CreatedAt time.Time `json:"created_at"`
+		}
+		if err := json.Unmarshal(raw, &pages); err != nil {
+			return nil, fmt.Errorf("parse comments %s: %w", ep, err)
+		}
+		for _, page := range pages {
+			for _, c := range page {
+				if len(out) >= maxListedComments {
+					return out, nil
+				}
+				out = append(out, ExistingComment{
+					Author:    c.User.Login,
+					Path:      c.Path,
+					Line:      c.Line,
+					Body:      c.Body,
+					CreatedAt: c.CreatedAt,
+				})
+			}
+		}
+	}
+	return out, nil
 }
 
 func runGH(ctx context.Context, args ...string) ([]byte, error) {

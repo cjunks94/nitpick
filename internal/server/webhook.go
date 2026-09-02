@@ -685,9 +685,13 @@ func (h *Handler) dispatchCommentTrigger(w http.ResponseWriter, log *slog.Logger
 // reviews. Mints an installation token, fetches the current PR state (the
 // comment payload doesn't include the head SHA), runs the same skip rules
 // minus dedup, then dispatches reviewPR.
-func (h *Handler) handleCommentTriggerAsync(ctx context.Context, log *slog.Logger, repo string, prNum int, installID int64, commenter string) {
+func (h *Handler) handleCommentTriggerAsync(parent context.Context, log *slog.Logger, repo string, prNum int, installID int64, commenter string) {
 	defer recoverPanic(log, "comment-trigger goroutine")
-	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
+
+	// Bounds only this function's own GitHub calls. reviewPR is handed the
+	// unbounded parent instead, because it manages its own phase budgets and
+	// may legitimately outlive this window when the CodeRabbit wait is on.
+	ctx, cancel := context.WithTimeout(parent, reviewPhaseBudget)
 	defer cancel()
 
 	token, err := h.TokenSource.Token(ctx, installID)
@@ -754,7 +758,7 @@ func (h *Handler) handleCommentTriggerAsync(ctx context.Context, log *slog.Logge
 		return
 	}
 
-	h.reviewPR(ctx, log, reviewTarget{
+	h.reviewPR(parent, log, reviewTarget{
 		Repo:            repo,
 		PRNum:           prNum,
 		HeadSHA:         pr.HeadSHA,
@@ -834,9 +838,23 @@ type reviewTarget struct {
 	HeadIsUntrusted bool
 }
 
-func (h *Handler) reviewPR(ctx context.Context, log *slog.Logger, t reviewTarget) {
+// reviewPhaseBudget bounds each of the two working phases of a review: the
+// setup phase (token, diff, config, context files) and the review phase
+// (prior-findings fetch, LLM call, posting).
+//
+// Split into phases because the optional CodeRabbit wait sits between them and
+// can legitimately run for minutes. A single deadline spanning the whole
+// function would let a 4-minute wait eat the LLM call's clock and turn a
+// successful wait into a guaranteed timeout.
+const reviewPhaseBudget = 90 * time.Second
+
+func (h *Handler) reviewPR(parent context.Context, log *slog.Logger, t reviewTarget) {
 	defer recoverPanic(log, "review goroutine")
-	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
+
+	// Setup phase. Deferred cancel rather than an explicit one at the end of
+	// the phase: early returns below still use this context to post their
+	// status comments, and an over-eager cancel would silence them.
+	ctx, cancel := context.WithTimeout(parent, reviewPhaseBudget)
 	defer cancel()
 
 	repo, prNum, headSHA := t.Repo, t.PRNum, t.HeadSHA
@@ -925,10 +943,36 @@ func (h *Handler) reviewPR(ctx context.Context, log *slog.Logger, t reviewTarget
 
 	contextFiles := fetchContextFiles(ctx, log, client, repo, headSHA, hunks)
 
+	// CodeRabbit interop. The prompt has always instructed the model to skip
+	// "anything CodeRabbit would also flag", but until now that was a guess
+	// about another bot's behaviour rather than knowledge of what it said.
+	crCfg := config.CodeRabbitConfig{}
+	if repoCfg != nil {
+		crCfg = repoCfg.Review.CodeRabbit
+	}
+
+	// Wait phase (opt-in). Gets its own budget off the parent so it can't
+	// borrow from the setup phase or repay itself out of the review phase.
+	// Bounded and ctx-aware, so a shutdown drain cancels it.
+	if crCfg.Wait && crCfg.IsEnabled() {
+		waitCtx, cancelWait := context.WithTimeout(parent, maxCodeRabbitWaitTimeout+reviewPhaseBudget)
+		waitForCodeRabbit(waitCtx, log, client, repo, prNum, crCfg, start)
+		cancelWait()
+	}
+
+	// Review phase. A fresh budget off the parent: whatever the wait cost,
+	// the LLM call still gets its full clock.
+	reviewCtx, cancelReview := context.WithTimeout(parent, reviewPhaseBudget)
+	defer cancelReview()
+	ctx = reviewCtx
+
+	priorFindings := fetchPriorFindings(ctx, log, client, repo, prNum, crCfg)
+
 	res, err := h.Provider.Review(ctx, provider.ReviewRequest{
 		Hunks:          hunks,
 		ContextFiles:   contextFiles,
 		RepoGuidelines: repoNotes,
+		PriorFindings:  priorFindings,
 	})
 	// Recorded before the error check, and it is load-bearing: the Anthropic
 	// provider reports usage even when parsing its response fails, because

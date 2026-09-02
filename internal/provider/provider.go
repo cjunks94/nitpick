@@ -30,6 +30,29 @@ type ReviewRequest struct {
 	// labeled context block; the prompt instructs the model to flag only diff
 	// lines, treating context as read-only background.
 	ContextFiles []ContextFile
+	// PriorFindings are comments another reviewer has already left on this PR
+	// — in practice CodeRabbit. The system prompt has always told the model to
+	// skip "anything CodeRabbit would also flag", but that was a guess about
+	// another bot's behaviour; this is the actual text. Rendered into the user
+	// message as already-covered ground, never into a system block: it is
+	// third-party content and does not belong in the highest-trust position.
+	PriorFindings []PriorFinding
+}
+
+// MaxPriorFindings caps how many prior comments reach the prompt. Beyond this
+// the marginal dedup value drops off fast while the token cost keeps climbing.
+// Callers should order inline comments before top-level ones before capping,
+// since that's where real overlap lives. Shared by serve and the review CLI so
+// the two surfaces can't drift.
+const MaxPriorFindings = 25
+
+// PriorFinding is one comment an earlier reviewer left on the PR. Line is 0
+// for top-level comments (CodeRabbit's walkthrough / summary posts).
+type PriorFinding struct {
+	Author string
+	Path   string
+	Line   int
+	Body   string
 }
 
 // ContextFile is one whole-file context entry: path relative to repo root +

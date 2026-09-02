@@ -34,6 +34,7 @@ This is the *one* place we don't skip the measurement loop. Vibes-tuning a promp
 
 ### Safe to touch without eval
 - `internal/server/` (server mechanics — covered by unit tests)
+- `internal/server/coderabbit.go` + `renderUserMessage`'s prior-findings block. The CodeRabbit dedup instruction lives in the **user** message on purpose: it keeps the change out of `internal/prompt/system.go` and therefore out of the eval gate. Adding a system-prompt acknowledgment of the block (as v2.3 did for context files) is a reasonable follow-up, but that *would* need an eval run.
 - `internal/ghapp/` (auth — would need integration test if changed substantively)
 - `internal/ghc/comments.go` (`BuildReviewBody` shape — covered by tests)
 - `cmd/*.go` (flag parsing)
