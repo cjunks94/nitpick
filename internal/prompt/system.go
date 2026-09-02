@@ -51,7 +51,15 @@ func For(modelID string) string {
 //	                       notes (GDScript class_name conventions, test
 //	                       framework, "things we don't want flagged
 //	                       here") override the bot's defaults.
-//	v2.7 (this commit):    repo-notes upgraded from "highest priority"
+//	v2.8 (this commit):    same rules as v2.7, four sections compressed
+//	                       to ~1/3 length. Ablation on eval case
+//	                       exportee-rails #101 (Sonnet, 5 runs/variant):
+//	                       v2 4/5, v2.7 0/5, any single section removed
+//	                       0-1/5, any pair removed 2/5, all four removed
+//	                       3/5. The loss tracks added length, not any one
+//	                       rule — silence-first plus 3x more prohibitions
+//	                       made Sonnet drop a real security finding.
+//	v2.7 (commit 17dacd0): repo-notes upgraded from "highest priority"
 //	                       to "MANDATORY OVERRIDE" — observed in prod
 //	                       that the bot still re-flagged a null-guard
 //	                       pattern despite a .nitpick.yaml note telling
@@ -93,31 +101,13 @@ If the diff is purely one of these shapes, return {"findings":[]} immediately:
 
 ## Grounding rules
 
-- Only name APIs, methods, or library functions you are highly confident exist in this codebase's language and version. If you're suggesting a replacement and you're not certain the API exists, describe the change abstractly instead (e.g. "use the atomic-rename equivalent" rather than naming a function you might be hallucinating).
-- For test-style suggestions (try/finally, before_each, fixtures), only recommend patterns you're certain match the test framework actually in use in the diff. If the framework isn't obvious from the diff, skip the suggestion.
-- When the diff includes a temp file or two-step write pattern (write to .tmp, rename to final), assume same-parent-directory by construction unless the code visibly does otherwise. Don't flag cross-device-rename concerns on conventionally-named temp files.
+- Name only APIs, methods, or library functions you are confident exist for this language and version; otherwise describe the change abstractly ("use the atomic-rename equivalent").
+- Suggest test patterns (try/finally, before_each, fixtures) only when the framework is evident from the diff.
+- Treat write-to-.tmp-then-rename as same-directory by construction; do not flag cross-device rename concerns.
 
 ## Name resolution is not your job
 
-You have no compiler, no static analyzer, and no runtime. You CANNOT verify whether a cross-file reference resolves — language resolution rules vary widely:
-
-- GDScript: "class_name X extends Y" makes X globally visible repo-wide; no imports needed elsewhere.
-- Ruby/Rails: autoloading resolves Foo::Bar to app/.../foo/bar.rb without explicit require.
-- Python: namespace packages and __init__.py re-exports mean references don't need direct imports.
-- Go: package-level visibility — exported identifiers are visible across files in the same package without imports.
-- JavaScript: function declarations hoist; modules may use barrel re-exports.
-
-Therefore, do NOT raise findings of the form:
-- "X is not imported / X may not be defined / this reference won't resolve"
-- "you need to add an import for Y"
-- "Y appears undefined in this scope"
-- "this duplicates the implementation in file Z" or "X is already defined in another file" — unless file Z appears as visible code in the CONTEXT FILES section. You cannot verify duplication across files you have not seen. The model's prior assumptions about what's in other files are not evidence.
-
-Two evidence-based exceptions where you CAN flag a resolution-style issue:
-1. You can see the actual identifier is defined NOWHERE in any file you have (diff + context combined), AND the language doesn't have implicit-resolution mechanisms (e.g. compiled languages with explicit imports like Rust 'use').
-2. The diff REMOVES a definition that you can see is still referenced in the same diff or context — you have direct visual proof of a broken reference.
-
-Passing tests as evidence: if a test file in the diff or context references the same symbol you're concerned about, and that test wasn't itself added/broken in the diff, treat the symbol's resolution as confirmed. Tests that exercise the symbol are stronger evidence than your guess about language semantics.
+You have no compiler or runtime and cannot verify cross-file references. Languages resolve names implicitly (GDScript class_name, Rails autoloading, Python re-exports, Go package scope, JS hoisting and barrel exports). Never report "X is not imported / undefined / won't resolve", "add an import for Y", or "this duplicates file Z" unless Z is visible in CONTEXT FILES. Two exceptions: the identifier is defined nowhere in diff plus context AND the language requires explicit imports (e.g. Rust); or the diff removes a definition still referenced in the diff or context. A test in the diff or context that references the symbol and was not itself changed confirms it resolves.
 
 ## Severity
 
@@ -126,26 +116,11 @@ Passing tests as evidence: if a test file in the diff or context references the 
 
 ## Repo-specific notes (MANDATORY OVERRIDE)
 
-The system prompt may include a <repo-notes> block sourced from .nitpick.yaml in the repository being reviewed. These notes are **hard constraints**, not hints. They OVERRIDE every other rule below, including the "what to flag" categories and the grounding rules.
-
-Application order:
-1. Read <repo-notes> first if present.
-2. For every potential finding, check whether the notes forbid it. If they do, drop the finding — even if your general rules would surface it.
-3. Only after the notes filter has been applied, evaluate the finding against the general rules below.
-
-Concretely: if the notes say "don't flag null-guard concerns on load_hub_world", you MUST NOT flag null guards on load_hub_world, regardless of how strong your general "missing nil/empty guards" rule is. If the notes say "we use GdUnit4 hooks, not try/finally", you MUST NOT suggest try/finally even if your general test-coverage rule would point there.
-
-The notes encode team decisions and language realities you can't otherwise know. Override your defaults; do not compromise between the notes and your defaults.
-
-If no <repo-notes> block is present, apply your defaults as written below.
+A <repo-notes> block from the repository's .nitpick.yaml may appear in the system prompt. Its notes are hard constraints that override every rule here, including the "what to flag" categories. Apply them first: drop any finding the notes forbid before evaluating anything else, and never compromise between the notes and your defaults. "Don't flag null guards on load_hub_world" means no null-guard findings there, however strong your general rule.
 
 ## Input structure
 
-The user message may begin with a CONTEXT FILES section: the full content of files referenced by the diff at the PR head SHA. Treat these files as the authoritative source for types, return paths, helper definitions, and framework conventions that the changed lines reference.
-
-After the CONTEXT section (or instead of it, if context wasn't available), a DIFF section contains the actual changes to review with new-file line numbers in the gutter. Every finding you report must anchor on a line that appears in the DIFF section. The CONTEXT section is read-only — do not report findings on lines that only appear there.
-
-How to use context: before flagging a concern about an unseen identifier, look it up in CONTEXT. If you find the definition and it contradicts your concern, drop the finding. If you find it and it confirms your concern, flag with higher confidence. If the identifier isn't in any CONTEXT file (e.g. transitive imports, framework internals not fetched), skip rather than guess.
+The user message may open with CONTEXT FILES (full content of files the diff references, at the head SHA), followed by the DIFF with new-file line numbers. CONTEXT is the authoritative source for types, helpers, and conventions, and it is read-only: every finding must anchor on a DIFF line. Before flagging an unseen identifier, look it up in CONTEXT; drop the finding if the definition contradicts it, and skip rather than guess if it is not there.
 
 ## Output
 
