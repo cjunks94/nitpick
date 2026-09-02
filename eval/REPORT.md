@@ -1,84 +1,85 @@
 # Eval report — `anthropic-claude-haiku-4-5`
 
-Cases: 20  ·  Expected findings: 7  ·  Produced: 20
+Cases: 20  ·  Expected findings: 7  ·  Produced: 22
 
 | Metric | Value |
 |---|---|
-| Precision | 0.150 |
-| Recall (all) | 0.429 |
+| Precision | 0.182 |
+| Recall (all) | 0.571 |
 | Recall (critical) | 0.000 |
-| Recall (useful) | 0.429 |
-| Noise rate | 0.850 |
-| Avg $/PR | $0.0078 |
+| Recall (useful) | 0.571 |
+| Noise rate | 0.818 |
+| Avg $/PR | $0.0079 |
 
 ## Per-case
 | PR | Repo | Expected | Hits | Misses | Extras | $ |
 |---|---|---|---|---|---|---|
-| #87 | cjunks94/resume-improvements | 1 | 0 | 1 | 1 | $0.0037 |
-| #82 | cjunks94/resume-improvements | 0 | 0 | 0 | 1 | $0.0024 |
-| #68 | cjunks94/resume-improvements | 0 | 0 | 0 | 1 | $0.0025 |
-| #44 | cjunks94/panoptrain | 0 | 0 | 0 | 0 | $0.0041 |
-| #4 | cjunks94/hush-hush | 0 | 0 | 0 | 0 | $0.0020 |
-| #29 | cjunks94/agentic-portfolio | 1 | 1 | 0 | 1 | $0.0073 |
-| #25 | cjunks94/agentic-portfolio | 0 | 0 | 0 | 2 | $0.0093 |
-| #56 | cjunks94/panoptrain | 1 | 0 | 1 | 3 | $0.0333 |
-| #121 | cjunks94/exportee-rails | 1 | 1 | 0 | 1 | $0.0106 |
-| #101 | cjunks94/exportee-rails | 1 | 0 | 1 | 2 | $0.0060 |
-| #28 | cjunks94/agentic-portfolio | 0 | 0 | 0 | 0 | $0.0038 |
-| #27 | cjunks94/agentic-portfolio | 0 | 0 | 0 | 0 | $0.0036 |
-| #59 | cjunks94/panoptrain | 1 | 0 | 1 | 1 | $0.0064 |
-| #54 | cjunks94/panoptrain | 0 | 0 | 0 | 2 | $0.0145 |
-| #117 | cjunks94/exportee-rails | 1 | 1 | 0 | 2 | $0.0086 |
-| #69 | cjunks94/resume-improvements | 0 | 0 | 0 | 0 | $0.0279 |
-| #64 | cjunks94/resume-improvements | 0 | 0 | 0 | 0 | $0.0021 |
-| #57 | cjunks94/resume-improvements | 0 | 0 | 0 | 0 | $0.0026 |
+| #87 | cjunks94/resume-improvements | 1 | 1 | 0 | 2 | $0.0047 |
+| #82 | cjunks94/resume-improvements | 0 | 0 | 0 | 0 | $0.0020 |
+| #68 | cjunks94/resume-improvements | 0 | 0 | 0 | 2 | $0.0029 |
+| #44 | cjunks94/panoptrain | 0 | 0 | 0 | 1 | $0.0038 |
+| #4 | cjunks94/hush-hush | 0 | 0 | 0 | 0 | $0.0032 |
+| #29 | cjunks94/agentic-portfolio | 1 | 1 | 0 | 1 | $0.0075 |
+| #25 | cjunks94/agentic-portfolio | 0 | 0 | 0 | 2 | $0.0098 |
+| #56 | cjunks94/panoptrain | 1 | 1 | 0 | 2 | $0.0334 |
+| #121 | cjunks94/exportee-rails | 1 | 0 | 1 | 1 | $0.0103 |
+| #101 | cjunks94/exportee-rails | 1 | 0 | 1 | 2 | $0.0061 |
+| #28 | cjunks94/agentic-portfolio | 0 | 0 | 0 | 0 | $0.0036 |
+| #27 | cjunks94/agentic-portfolio | 0 | 0 | 0 | 0 | $0.0035 |
+| #59 | cjunks94/panoptrain | 1 | 0 | 1 | 2 | $0.0070 |
+| #54 | cjunks94/panoptrain | 0 | 0 | 0 | 2 | $0.0144 |
+| #117 | cjunks94/exportee-rails | 1 | 1 | 0 | 1 | $0.0078 |
+| #69 | cjunks94/resume-improvements | 0 | 0 | 0 | 0 | $0.0269 |
+| #64 | cjunks94/resume-improvements | 0 | 0 | 0 | 0 | $0.0016 |
+| #57 | cjunks94/resume-improvements | 0 | 0 | 0 | 0 | $0.0022 |
 | #10 | cjunks94/hush-hush | 0 | 0 | 0 | 0 | $0.0049 |
-| #9 | cjunks94/hush-hush | 0 | 0 | 0 | 0 | $0.0014 |
+| #9 | cjunks94/hush-hush | 0 | 0 | 0 | 0 | $0.0016 |
 
 ## Detail
 
 ### #87 cjunks94/resume-improvements
-- MISS `particle-scene.js:65` [useful/defensive] isLightBg parses hex and rgb()/rgba() but not hsl()/hsla(); browsers may serialize --c-bg as hsl() so light-theme detection silently breaks
-- EXTRA `particle-scene.js:311` [useful/correctness] updateColors() re-randomizes particle colors on every theme change, losing the original color assignment. Consider using a deterministic seed or storing the original palette index per particle so colors remain stable across theme switches.
-
-### #82 cjunks94/resume-improvements
-- EXTRA `css/components.css:107` [useful/css_correctness] The linear-gradient syntax `linear-gradient(currentColor, currentColor) center/100% 2px no-repeat` is invalid shorthand. CSS gradients do not support the `no-repeat` keyword, and the `center/` positioning applies only to background-image, not the gradient function itself. Use `background: linear-gradient(currentColor, currentColor); background-size: 100% 2px; background-position: center; background-repeat: no-repeat;` or simplify to a solid bar since the gradient is not needed for a single color.
+- HIT `particle-scene.js:65` [useful/correctness] The rgb/rgba regex accepts leading decimal points (e.g., rgb(.5, .5, .5)) via '[0-9.]+' but does not validate the parsed floats are in [0..255] range. Invalid CSS like rgb(999,999,999) would pass the regex and produce false brightness calculations. Add a range check after line 67.
+- EXTRA `particle-scene.js:72` [useful/correctness] The Rec.601 brightness threshold (140) may be too strict for short hex colors like #fff or #000. After expansion at line 57, a 3-digit hex like #888 becomes #888888 (136,136,136), yielding brightness 136—below 140—despite being mid-gray. Consider whether the threshold should account for the full [0..255] range or be slightly adjusted.
+- EXTRA `particle-scene.js:311` [useful/correctness] The updateColors function re-randomizes particle colors on every theme change, but particles with in-flight animations may have expected their colors to remain stable. Consider whether re-randomization is the intended behavior, or if the existing color should be preserved and only the palette lightened/darkened.
 
 ### #68 cjunks94/resume-improvements
-- EXTRA `.github/workflows/deploy.yml:87` [useful/logic_precedence] The condition `github.actor != 'dependabot[bot]' && (...)` will reject all Dependabot PRs from staging deploy, but line 31 explicitly enables tests to run on Dependabot PRs. This creates a workflow where Dependabot changes are tested but never deployed to staging, which may not be the intended behavior if you want to validate Dependabot updates end-to-end.
+- EXTRA `.github/workflows/deploy.yml:31` [useful/logic_gate] The test job now runs on Dependabot PRs, but the deploy-staging job (line 87) explicitly skips them due to missing ACTIONS_DEPLOY_KEY access. Dependabot PRs will pass tests but fail at deploy, which may be confusing; consider documenting this expected flow or using separate secrets.
+- EXTRA `.github/workflows/deploy.yml:88` [useful/operator_precedence] The condition uses `&&` before parenthesized `||` chains, which is correct, but the original intent (lines 86–90) changes semantics: now all three deployment triggers require `github.actor != 'dependabot[bot]'` as a gating condition. Verify this doesn't unintentionally block manual Dependabot testing via workflow_dispatch.
+
+### #44 cjunks94/panoptrain
+- EXTRA `packages/client/src/components/Map/TransitMap.tsx:1013` [useful/contract_drift] The comment documents that aircraft-markers must be declared BEFORE airports to avoid MapLibre addLayer failures, but the airports block still guards on iconsReady (line 1071). This creates a potential race: if iconsReady becomes true but the aircraft Source hasn't yet committed to the DOM, the airports layers' beforeId reference will fail. The iconsReady check alone is insufficient; the ordering guarantee requires both iconsReady AND sequential JSX evaluation.
 
 ### #29 cjunks94/agentic-portfolio
-- HIT `src/agentic_portfolio/web/api.py:589` [useful/contract_drift] The docstring for _make_broker states that a future LiveBroker "may only be returned when demo_mode is explicitly False", but the function does not check app.state.demo_mode or enforce this contract. The seam exists as documented, but the gate is missing.
-- EXTRA `src/agentic_portfolio/web/views.py:493` [useful/contract_drift] The _demo_context docstring says it "Defaults to True if the attribute is missing", but this default silently masks configuration errors. If the factory fails to set app.state.demo_mode, the template will render as demo=True without any warning in the log.
+- HIT `src/agentic_portfolio/web/api.py:589` [useful/contract_drift] The docstring documents a future security contract (demo_mode True → PaperBroker, False → potential LiveBroker), but _make_broker does not read or enforce app.state.demo_mode. The function always returns PaperBroker regardless of the flag, deferring the gate to a future change; the comment should note that demo_mode enforcement is not yet implemented.
+- EXTRA `src/agentic_portfolio/web/views.py:493` [useful/defensive_guard] The _demo_context function uses getattr with a True default if demo_mode is missing from app.state, but the fail-safe contract and app factory guarantee it is always set. The guard is redundant; if it is meant to handle a missing attribute in some legacy or test path, that case should be explicit or a comment should note it.
 
 ### #25 cjunks94/agentic-portfolio
-- EXTRA `src/agentic_portfolio/web/runs.py:80` [useful/correctness] The fallback `prior = self.current() or {}` will create an empty dict when current() returns None, but an empty dict has status=None which correctly fails the running check. However, this is subtle — consider being explicit that an absent file is treated as idle state to aid future readers.
-- EXTRA `src/agentic_portfolio/web/runs.py:88` [useful/contract_drift] The docstring at line 66 says the return is `(True, None)` or `(False, reason)`, but the reason string at line 100 is "cooldown" while the docstring at line 72 says reason is "cooldown" (matching). However, there is no explicit documentation that fromisoformat can raise ValueError with a malformed ISO string — the try/except handles it but the silent None assignment at line 90 could mask unexpected formats without trace.
+- EXTRA `src/agentic_portfolio/web/runs.py:80` [useful/Logic error] try_start uses `prior = self.current() or {}` but current() can only return dict|None after the type guard. If prior is an empty dict from a prior failed read, prior.get("status") will return None, which will not equal "running" or "completed"/"failed". This is actually safe but the `or {}` fallback is unnecessary after the isinstance guard and masks the intent — should just use `prior = self.current()` and handle None explicitly.
+- EXTRA `src/agentic_portfolio/web/runs.py:98` [useful/Timezone assumption] Line 98 assumes datetime.now(timezone.utc) can be directly subtracted from a datetime read from ISO string, but if completed_at.tzinfo is None after the guard on line 96, the subtraction will still fail with TypeError unless line 97 always executes. However, the code flow is correct: line 96 checks if tzinfo is None, line 97 sets it to UTC only if None, so line 98 is safe. No issue here; the logic is sound.
 
 ### #56 cjunks94/panoptrain
-- MISS `packages/client/src/lib/tafCurrentPeriod.ts:28` [useful/correctness] selection loop picks last in iteration order, not latest timeFrom — assumes upstream returns basePeriods sorted ascending
-- EXTRA `packages/client/src/components/Map/AirportPopup.tsx:1` [useful/import_change] useState is now imported but the component was previously a pure render function. Verify that the lazy-init pattern for Date.now() on line 291 is necessary — if the component re-renders frequently due to parent state, pinning `now` is correct, but if renders are stable, the added complexity may be premature.
-- EXTRA `packages/client/src/lib/tafCurrentPeriod.ts:14` [useful/default_parameter] The default parameter `now: number = Date.now()` is evaluated at function-definition time in TypeScript, not at call time. For safety and clarity, consider removing the default or documenting that callers should always pass an explicit value to avoid stale timestamps across multiple invocations.
-- EXTRA `packages/server/src/services/taf-poller.ts:102` [useful/set_lookup] The VALID_CHANGES Set includes 'PROB' but the parseChange function normalizes 'PROB30'/'PROB40' to 'PROB' before checking. Verify that the Set membership check on line 109 always succeeds for the normalized string — a quick scan confirms it does, but the conditional could be clearer.
+- HIT `packages/client/src/lib/tafCurrentPeriod.ts:28` [useful/order_dependent_logic] The loop in findCurrentTafPeriod() selects the latest base period where timeFrom <= now by iterating forward and overwriting 'active' on each match. This is correct because basePeriods are assumed sorted by timeFrom. If the upstream ever returns unsorted periods, the current logic would fail silently and pick the wrong period. Consider adding a comment documenting the sort assumption or a defensive sort.
+- EXTRA `packages/client/src/components/Map/AirportPopup.tsx:1` [useful/import_statement_order] The useState import was added to an existing import line, changing its shape. This is a style change but acceptable given React conventions; however, ensure the import reordering doesn't mask any behavioral differences (it does not in this case).
+- EXTRA `packages/server/src/index.ts:40` [useful/config_validation] TAF_POLL_INTERVAL validation uses Number.isFinite() to guard against NaN from typo'd env vars, which is good. However, the 60_000 ms floor (1 minute) is much shorter than the documented 30-minute default; consider documenting why a 1-minute floor is safe (e.g., why 60s won't hammer the upstream).
 
 ### #121 cjunks94/exportee-rails
-- HIT `app/services/sources/salesforce_adapter.rb:45` [useful/correctness] The extract method accumulates all rows in memory before returning. For large Salesforce result sets, this could cause memory exhaustion. Consider implementing pagination or a streaming approach.
-- EXTRA `app/services/sources/salesforce_adapter.rb:74` [useful/contract_drift] The credentials method falls back to `config` if the "credentials" key is missing, but config is never defined in this class. This will raise a NameError at runtime if connection_config lacks a nested "credentials" key.
+- MISS `app/services/sources/salesforce_adapter.rb:45` [useful/perf] extract accumulates entire SOQL result in memory; a multi-million-row Account export would OOM the worker
+- EXTRA `app/services/sources/salesforce_adapter.rb:74` [useful/contract_drift] The credentials method fetches from connection_config["credentials"] but falls back to `config` (which is not defined in the diff). Verify that `config` is inherited from BaseAdapter and contains all required credential keys, or risk KeyError on missing fields.
 
 ### #101 cjunks94/exportee-rails
 - MISS `app/controllers/api/v1/base_controller.rb:83` [useful/security] bad_request_with_message renders raw exception.message from ArgumentError; risks leaking internal context (CLAUDE.md: error messages must not leak internal details)
-- EXTRA `app/controllers/api/v1/base_controller.rb:61` [useful/nil_guard_missing] The unprocessable handler accesses exception.record.errors without guarding that exception.record exists. If ActiveRecord::RecordInvalid is raised without a record, this will crash with NoMethodError.
-- EXTRA `spec/requests/api/v1/widgets_spec.rb:6` [useful/test_fixture_unused] The owner_user fixture is created but never used in the visible test cases. Confirm it is used in test cases outside this diff or remove it.
+- EXTRA `app/controllers/api/v1/base_controller.rb:61` [useful/contract_drift] The unprocessable handler assumes exception.record exists and has an errors object, but ActiveRecord::RecordInvalid may not always provide a record with populated errors in all contexts. Consider adding a guard or fallback message.
+- EXTRA `spec/requests/api/v1/widgets_spec.rb:183` [useful/test_gap] The delete test reloads existing_widget and checks be_discarded, but this happens after run_test! in a block. If run_test! makes an HTTP request that modifies the database, the reload may not reflect the actual API behavior; verify the test isolation and timing.
 
 ### #59 cjunks94/panoptrain
 - MISS `packages/client/src/lib/scheduleIdle.ts:18` [useful/correctness] setTimeout fallback hardcodes 1ms and ignores the timeoutMs parameter; docstring promises 'soon-ish' upper bound but fallback fires next tick regardless of caller intent
-- EXTRA `packages/client/src/hooks/useTrainFeatures.ts:182` [useful/guard_logic] The empty-index check `Object.keys(index).length === 0` on line 182 may not reliably prevent stale data use. Line 101 sets `shapeIndexRef.current = {}` synchronously, but if a data poll arrives between that clear and the idle callback's `buildShapeIndex`, the empty guard passes yet the ref remains an empty object until idle fires, leaving trains on fallback. The guard was intentionally removed from processSlice (line 205) — consider whether the early return is actually protective or should also be removed here.
+- EXTRA `packages/client/src/hooks/useTrainFeatures.ts:182` [useful/correctness] Empty-index check `Object.keys(index).length === 0` on line 182 is performed after a guard on line 181, but line 205 removes the same check from processSlice. If the index is populated asynchronously during iteration, processSlice could compute paths against a stale or partial index. The removed guard should remain to ensure consistency.
+- EXTRA `packages/client/src/lib/trackInterpolation.ts:135` [useful/contract_drift] Comment states scheduleIdle is 'imported from ../scheduleIdle' and 'we don't track or cancel the handle', but the new scheduleIdle signature (line 14 of scheduleIdle.ts) now returns a number handle and supports cancellation. The comment should be updated to reflect that callers can now cancel if needed, or clarify why this call site intentionally ignores the handle.
 
 ### #54 cjunks94/panoptrain
-- EXTRA `packages/client/src/hooks/useTrainFeatures.ts:101` [useful/missing_dependency_guard] The useEffect at line 95–101 depends on `mode` but does not appear in the dependency array on line 101. This will cause stale closures over the prior mode's `mode` variable, risking incorrect state cleanup if the effect reruns without a mode change.
-- EXTRA `packages/client/src/lib/trackInterpolation.ts:119` [useful/cache_lifecycle_hazard] The indexByRoutes WeakMap stores a reference to the index for later retrieval, but the index contains ShapeData objects with numerically-incrementing IDs. If the same routes object is cached, re-entering with a different shapeIdCounter value will leave stale ID–distance pairs in snapCache (which is not cleared on cache hit), causing snap lookups to return wrong distances for the new shapes.
+- EXTRA `packages/client/src/hooks/useTrainFeatures.ts:80` [useful/contract_drift] The comment describes clearing interpolation tracking on mode change, but this useEffect lacks the `routeShapes` dependency despite referencing shapeIndexRef.current which is written in a separate effect depending on routeShapes. If routeShapes changes independently from mode, this effect won't re-run and stale interpolation state may persist.
+- EXTRA `packages/client/src/hooks/useRouteShapes.ts:31` [useful/correctness_bug] The cache-hit path (line 35-36) sets routeShapes synchronously without first clearing it (compare to the original code at line 26-27). If a mode-change lands a cache hit for stops but the previous mode had routes set, users briefly see mismatched shapes+stops from different modes before the routes fetch completes.
 
 ### #117 cjunks94/exportee-rails
-- HIT `app/services/transforms/data_frame_pipeline.rb:101` [useful/error_handling] apply_row_by_row_fallback calls Widgets::Builtins.const_get with a user-controlled widget_name (from config). If the widget class does not exist, const_get will raise NameError. Consider catching this error or validating the widget_name against a whitelist of known builtins before attempting the lookup.
-- EXTRA `app/services/transforms/data_frame_pipeline.rb:33` [useful/type_safety] df.write_csv(path) is called without checking the return value or verifying the file was actually written. If the write fails silently or raises an exception, the subsequent File.size(path) call on line 37 may raise or return stale data. Consider wrapping the write in error handling or verifying file existence before computing size and checksum.
-- EXTRA `app/services/exports/executor.rb:92` [useful/resource_leak] If result[:bytes_written] > max_upload_bytes raises ArtifactTooLarge, the ensure block (line 106-108) will close and unlink the tempfile, but the exception propagates without attachment. This is correct cleanup, but ensure the caller handles the exception gracefully to avoid leaving the export_run in an inconsistent state.
+- HIT `app/services/transforms/data_frame_pipeline.rb:101` [useful/missing_nil_guard] Widgets::Builtins.const_get will raise NameError if the widget class does not exist; the fallback path should guard against this to prevent crashes on typos in config.
+- EXTRA `app/services/transforms/data_frame_pipeline.rb:103` [useful/contract_drift] filter_map silently drops nil/falsy results from row-by-row widget calls, but the docstring and calling code assume all rows survive transforms; this filtering behavior is not documented and may cause row counts to mismatch expectations.
