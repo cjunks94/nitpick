@@ -188,22 +188,57 @@ func parseFindings(text string) ([]Comment, error) {
 	// Anchor on the `"findings"` key; the JSON object surrounding it is the
 	// one we want. Falls back to first '{' if anchor not found AND the text
 	// starts with '{' (well-formed response with empty object).
-	findingsIdx := strings.Index(text, `"findings"`)
-	if findingsIdx < 0 {
+	//
+	// Both the anchor and its enclosing brace are guesses: prose before the
+	// JSON can mention "findings" in quotes, and a '{' inside an earlier
+	// string value is not an object start. So rather than committing to the
+	// first guess, try candidates — each anchor in order, each enclosing '{'
+	// nearest-first — and accept the first one that actually unmarshals. The
+	// first candidate is exactly what the single-guess version chose, so any
+	// response that parsed before parses identically now; the extra work only
+	// runs on responses that would otherwise have been discarded.
+	if !strings.Contains(text, `"findings"`) {
 		if !strings.HasPrefix(text, "{") {
 			return nil, nil // prose-only response → silent review
 		}
-		findingsIdx = 0
-	}
-	start := strings.LastIndex(text[:findingsIdx+1], "{")
-	if start < 0 {
-		return nil, nil // findings key but no enclosing brace → silent
-	}
-	end := matchingBrace(text, start)
-	if end <= start {
-		return nil, nil // unterminated object → silent
+		end := matchingBrace(text, 0)
+		if end <= 0 {
+			return nil, nil // unterminated object → silent
+		}
+		return unmarshalFindings(text[:end+1])
 	}
 
+	var firstErr error
+	tried := false
+	for anchor := strings.Index(text, `"findings"`); anchor >= 0; {
+		for start := strings.LastIndex(text[:anchor+1], "{"); start >= 0; start = strings.LastIndex(text[:start], "{") {
+			end := matchingBrace(text, start)
+			if end <= anchor {
+				continue // does not enclose the anchor, or unterminated
+			}
+			tried = true
+			out, err := unmarshalFindings(text[start : end+1])
+			if err == nil {
+				return out, nil
+			}
+			if firstErr == nil {
+				firstErr = err
+			}
+		}
+		next := strings.Index(text[anchor+1:], `"findings"`)
+		if next < 0 {
+			break
+		}
+		anchor += 1 + next
+	}
+	if !tried {
+		return nil, nil // findings key but no enclosing object → silent
+	}
+	return nil, firstErr
+}
+
+// unmarshalFindings decodes one candidate JSON object into comments.
+func unmarshalFindings(text string) ([]Comment, error) {
 	var payload struct {
 		Findings []struct {
 			File     string  `json:"file"`
@@ -213,7 +248,7 @@ func parseFindings(text string) ([]Comment, error) {
 			Body     string  `json:"body"`
 		} `json:"findings"`
 	}
-	if err := json.Unmarshal([]byte(text[start:end+1]), &payload); err != nil {
+	if err := json.Unmarshal([]byte(text), &payload); err != nil {
 		return nil, err
 	}
 

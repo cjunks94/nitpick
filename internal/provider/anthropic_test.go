@@ -264,3 +264,61 @@ func TestRenderUserMessage_RedactsSecretsInPriorFindings(t *testing.T) {
 		}
 	}
 }
+
+// The "findings" anchor and its enclosing brace are guesses. When the first
+// guess is wrong the parser must keep looking rather than discard a paid
+// review; when nothing parses it must still surface the error.
+func TestParseFindings_CandidateSelection(t *testing.T) {
+	valid := `{"findings":[{"file":"a.go","line":10,"severity":"useful","category":"perf","body":"N+1 query"}]}`
+	tests := []struct {
+		name    string
+		text    string
+		wantLen int
+		wantErr bool
+	}{
+		{
+			// CodeRabbit's case: a '{' inside an earlier string value is the
+			// nearest brace before the key but not the object start.
+			name:    "brace inside a preceding string value",
+			text:    `{"summary":"{","findings":[{"file":"a.go","line":1,"severity":"useful","category":"x","body":"b"}]}`,
+			wantLen: 1,
+		},
+		{
+			name:    "preamble prose quotes the findings key",
+			text:    "Per the schema I return \"findings\" as an array {like this}.\n\n" + valid,
+			wantLen: 1,
+		},
+		{
+			name:    "preamble mentions the key with no brace at all",
+			text:    "No \"findings\" worth reporting here.\n\n" + valid,
+			wantLen: 1,
+		},
+		{
+			name:    "genuinely malformed object still errors",
+			text:    `{"findings":[{"file":"a.go","line":}]}`,
+			wantErr: true,
+		},
+		{
+			name:    "key mentioned in prose only, no object",
+			text:    `I have no "findings" for this diff.`,
+			wantLen: 0,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseFindings(tt.text)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected an error, got %d findings", len(got))
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(got) != tt.wantLen {
+				t.Fatalf("got %d findings, want %d", len(got), tt.wantLen)
+			}
+		})
+	}
+}
