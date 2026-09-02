@@ -10,7 +10,7 @@ State snapshot at v0.2.0, plus the v0.3 work listed under "Shipped since this sn
 - **`.nitpick.yaml` repo config** — `ignore_paths` and `context_notes`.
 - **`/nitpick` comment triggers** across `issue_comment`, `pull_request_review_comment`, `pull_request_review`.
 - **Per-review status comments** so silent runs are visible.
-- **Prompt v2.2 → v2.7.** ⚠️ These landed **without eval re-runs**, against the eval-gated policy in `CLAUDE.md`. `eval/REPORT.md` still reflects v2. Re-running the sweep is the highest-value outstanding chore — and it's cheap: 20 cases × 3 runs × both models ≈ **$2.16**. Note it's a re-baseline, not a v2 A/B: context files and repo notes didn't exist when the v2 numbers were measured.
+- **Prompt v2.2 → v2.7.** These landed without eval re-runs at the time. Re-baselined on 2026-09-02 (commits `8142756`..`c7e7785`, six runs, ~$1.65 total) — see the v2.7 rows in the results table below. Haiku held; Sonnet lost a finding in two of three runs. The eval feeds diff-only input, so this measures the prompt text change, not context files or repo notes.
 - **Security hardening + secret redaction** (see below). Several v0.4.x "operational hardening" items moved up because they turned out to be exploitable, not just untidy.
 
 ### Security fixes worth not regressing
@@ -62,8 +62,12 @@ Three-run mean per config against the 20 labeled PRs (Haiku v2 prompt; same prom
 | Haiku v1 (initial prompt) | ~55 | 0.09 | 0.43 | 0.71 | 0.91 | 0.16 | $0.008 |
 | **Haiku v2 (silence-first)** | **22.7** | **0.16** | **0.48** | 0.52 | 0.84 | **0.25** | **$0.007** |
 | **Sonnet 4.6 (same v2 prompt)** | **6** | **0.50** | 0.29 | 0.43 | **0.50** | **0.46** | $0.029 |
+| Haiku v2.7 (re-baseline 2026-09-02) | 17.0 | 0.19 | 0.48 | 0.48 | 0.81 | 0.27 | $0.009 |
+| Sonnet 4.6 v2.7 (re-baseline 2026-09-02) | 5.3 | 0.39 | 0.19 | 0.29 | 0.61 | 0.26 | $0.019 |
 
 Sonnet has the highest F1 (precision-driven) at ~4× Haiku cost. Haiku has the highest useful_recall at $0.007/PR. Both beat the stub floor on F1 by a lot.
+
+v2.7 re-baseline (three runs each, 2026-09-02): Haiku is unchanged within noise — same useful recall, slightly fewer findings, slightly better precision. Sonnet regressed: run 1 matched the v2 numbers exactly (0.50 / 0.29), runs 2 and 3 each missed one more labeled finding (0.33 / 0.14). With 7 expected findings one miss is 0.14 of recall, so this is suggestive, not conclusive — but it is the direction the v2.4/v2.5 loosening would predict, and worth a targeted look at which case flipped before any further prompt work. Sonnet's $/PR fell from $0.029 to $0.019, most likely shorter outputs.
 
 ## Things tried that didn't work (committed as data points)
 
@@ -87,7 +91,7 @@ OpenAI-compatible API at ~$0.14/1M input vs Haiku's $1.00. If quality is compara
 - Postgres-backed dedup (current in-memory is lossy on restart). The trigger cooldown and the rolling spend ledger are lossy the same way and would move with it.
 - ~~Per-installation cost ceiling~~ — a rolling hourly ceiling shipped; a *persistent* monthly cap still needs storage.
 - ~~File-pattern allowlist to defeat accidentally exfiltrating `.env`~~ — shipped as `internal/secrets`: credentials files are masked in the diff (structure kept so the bot can still flag the commit) and dropped from context, plus content-level redaction for keys hardcoded in ordinary source. Covers both `serve` and the CLI.
-- Re-run the eval sweep against prompt v2.7 and commit a fresh `REPORT.md` (~$2.16). The committed numbers describe v2.
+- ~~Re-run the eval sweep against prompt v2.7~~ — done 2026-09-02; see results table. Open follow-up: identify which labeled finding Sonnet dropped in v2.7 runs 2–3.
 
 ## Design decisions worth preserving
 
