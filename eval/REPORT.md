@@ -1,81 +1,77 @@
 # Eval report — `anthropic-claude-haiku-4-5`
 
-Cases: 20  ·  Expected findings: 7  ·  Produced: 18
+Cases: 20  ·  Expected findings: 7  ·  Produced: 15
 
 | Metric | Value |
 |---|---|
-| Precision | 0.111 |
-| Recall (all) | 0.286 |
+| Precision | 0.200 |
+| Recall (all) | 0.429 |
 | Recall (critical) | 0.000 |
-| Recall (useful) | 0.286 |
-| Noise rate | 0.889 |
-| Avg $/PR | $0.0079 |
+| Recall (useful) | 0.429 |
+| Noise rate | 0.800 |
+| Avg $/PR | $0.0077 |
 
 ## Per-case
 | PR | Repo | Expected | Hits | Misses | Extras | $ |
 |---|---|---|---|---|---|---|
-| #87 | cjunks94/resume-improvements | 1 | 0 | 1 | 1 | $0.0037 |
-| #82 | cjunks94/resume-improvements | 0 | 0 | 0 | 1 | $0.0022 |
-| #68 | cjunks94/resume-improvements | 0 | 0 | 0 | 1 | $0.0026 |
-| #44 | cjunks94/panoptrain | 0 | 0 | 0 | 0 | $0.0044 |
-| #4 | cjunks94/hush-hush | 0 | 0 | 0 | 0 | $0.0033 |
-| #29 | cjunks94/agentic-portfolio | 1 | 1 | 0 | 1 | $0.0073 |
-| #25 | cjunks94/agentic-portfolio | 0 | 0 | 0 | 0 | $0.0099 |
-| #56 | cjunks94/panoptrain | 1 | 0 | 1 | 1 | $0.0321 |
-| #121 | cjunks94/exportee-rails | 1 | 0 | 1 | 2 | $0.0108 |
+| #87 | cjunks94/resume-improvements | 1 | 0 | 1 | 1 | $0.0039 |
+| #82 | cjunks94/resume-improvements | 0 | 0 | 0 | 0 | $0.0016 |
+| #68 | cjunks94/resume-improvements | 0 | 0 | 0 | 1 | $0.0027 |
+| #44 | cjunks94/panoptrain | 0 | 0 | 0 | 1 | $0.0036 |
+| #4 | cjunks94/hush-hush | 0 | 0 | 0 | 0 | $0.0034 |
+| #29 | cjunks94/agentic-portfolio | 1 | 1 | 0 | 0 | $0.0068 |
+| #25 | cjunks94/agentic-portfolio | 0 | 0 | 0 | 0 | $0.0100 |
+| #56 | cjunks94/panoptrain | 1 | 1 | 0 | 2 | $0.0331 |
+| #121 | cjunks94/exportee-rails | 1 | 0 | 1 | 0 | $0.0099 |
 | #101 | cjunks94/exportee-rails | 1 | 0 | 1 | 2 | $0.0061 |
-| #28 | cjunks94/agentic-portfolio | 0 | 0 | 0 | 0 | $0.0031 |
-| #27 | cjunks94/agentic-portfolio | 0 | 0 | 0 | 0 | $0.0033 |
-| #59 | cjunks94/panoptrain | 1 | 0 | 1 | 2 | $0.0072 |
-| #54 | cjunks94/panoptrain | 0 | 0 | 0 | 3 | $0.0156 |
-| #117 | cjunks94/exportee-rails | 1 | 1 | 0 | 2 | $0.0086 |
+| #28 | cjunks94/agentic-portfolio | 0 | 0 | 0 | 0 | $0.0033 |
+| #27 | cjunks94/agentic-portfolio | 0 | 0 | 0 | 0 | $0.0035 |
+| #59 | cjunks94/panoptrain | 1 | 0 | 1 | 1 | $0.0063 |
+| #54 | cjunks94/panoptrain | 0 | 0 | 0 | 2 | $0.0146 |
+| #117 | cjunks94/exportee-rails | 1 | 1 | 0 | 2 | $0.0083 |
 | #69 | cjunks94/resume-improvements | 0 | 0 | 0 | 0 | $0.0269 |
-| #64 | cjunks94/resume-improvements | 0 | 0 | 0 | 0 | $0.0021 |
-| #57 | cjunks94/resume-improvements | 0 | 0 | 0 | 0 | $0.0019 |
-| #10 | cjunks94/hush-hush | 0 | 0 | 0 | 0 | $0.0044 |
-| #9 | cjunks94/hush-hush | 0 | 0 | 0 | 0 | $0.0014 |
+| #64 | cjunks94/resume-improvements | 0 | 0 | 0 | 0 | $0.0016 |
+| #57 | cjunks94/resume-improvements | 0 | 0 | 0 | 0 | $0.0022 |
+| #10 | cjunks94/hush-hush | 0 | 0 | 0 | 0 | $0.0050 |
+| #9 | cjunks94/hush-hush | 0 | 0 | 0 | 0 | $0.0016 |
 
 ## Detail
 
 ### #87 cjunks94/resume-improvements
 - MISS `particle-scene.js:65` [useful/defensive] isLightBg parses hex and rgb()/rgba() but not hsl()/hsla(); browsers may serialize --c-bg as hsl() so light-theme detection silently breaks
-- EXTRA `particle-scene.js:311` [useful/correctness] updateColors() assigns random palette colors to each particle on every call, which will cause visible flickering if called during animation. Consider storing each particle's color index at init so updateColors() only recolors when the palette changes, not every frame.
-
-### #82 cjunks94/resume-improvements
-- EXTRA `css/components.css:107` [useful/contract_drift] The comment documents a 'centered 2px-tall linear-gradient on the container itself', but the background property uses `center/100% 2px no-repeat`, which centers vertically and stretches horizontally to 100%. For a 20px-wide container, this gradient bar spans the full width, not a centered narrower bar as the comment suggests.
+- EXTRA `particle-scene.js:311` [useful/correctness] updateColors() re-randomizes particle colors on every theme change, but particles initialized at line 201 are assigned once and never re-randomized during animate(). This creates inconsistent behavior: particles retain their original random color assignment from init, while updateColors() assigns a fresh random color to each particle. Consider whether re-randomization on theme switch is intentional or if colors should be deterministically mapped (e.g., by particle index mod palette length) for consistency.
 
 ### #68 cjunks94/resume-improvements
-- EXTRA `.github/workflows/deploy.yml:87` [useful/logic_error] The new condition on line 87 checks `github.actor != 'dependabot[bot]'` before the grouped OR conditions, but the logic structure inverts the intent: this will now skip Dependabot PRs from all three conditions (push, PR, dispatch) when the original requirement was only to skip them from deploy-staging specifically. Line 31 still runs tests for Dependabot PRs, but line 87's broad rejection prevents their staging deployment even after passing tests, making the test-on-dependabot decision moot.
+- EXTRA `.github/workflows/deploy.yml:87` [useful/logic_correctness] The new condition `github.actor != 'dependabot[bot]'` blocks Dependabot PRs from deploying to staging, but the test job (lines 28–31) now runs on Dependabot PRs to provide test signal. This means Dependabot PRs will be tested but fail to deploy, which may be intentional but creates an asymmetric workflow—consider documenting whether this is desired or if Dependabot PRs should skip tests entirely.
+
+### #44 cjunks94/panoptrain
+- EXTRA `packages/client/src/components/Map/TransitMap.tsx:1025` [useful/contract_drift] The comment documents that the aircraft block uses an Empty FeatureCollection pattern when the overlay is toggled off, but the code only conditionally renders the entire Source/Layer block on `iconsReady` without toggling the data. The toggle mechanism referenced in the comment (empty vs. non-empty FeatureCollection) is not implemented in the visible code.
 
 ### #29 cjunks94/agentic-portfolio
-- HIT `src/agentic_portfolio/web/api.py:589` [useful/contract_drift] The docstring states that a future LiveBroker will be gated on demo_mode, but the function never checks app.state.demo_mode before returning a PaperBroker. The seam exists but the guard is not implemented, leaving the future contract undocumented in code.
-- EXTRA `src/agentic_portfolio/web/views.py:487` [useful/defensive_default] The _demo_context function defaults demo_mode to True if the attribute is missing, but this silently papers over a misconfiguration where create_app was called without the parameter. Consider logging a warning when the fallback is used to detect callers that skip the fail-safe parameter.
+- HIT `src/agentic_portfolio/web/api.py:589` [useful/contract_drift] The docstring documents that _make_broker must return a paper broker when demo_mode is True and forbids returning a real broker unless demo_mode is explicitly False, but the current implementation does not read or check app.state.demo_mode at all. This seam will silently ignore the fail-safe contract when a LiveBroker is added.
 
 ### #56 cjunks94/panoptrain
-- MISS `packages/client/src/lib/tafCurrentPeriod.ts:28` [useful/correctness] selection loop picks last in iteration order, not latest timeFrom — assumes upstream returns basePeriods sorted ascending
-- EXTRA `packages/client/src/components/Map/AirportPopup.tsx:1` [useful/import_refactor] useState is newly imported but the component already uses state via the metar section or other dependencies. Verify that useState was not already available from another import statement in the original file that was removed.
+- HIT `packages/client/src/lib/tafCurrentPeriod.ts:28` [useful/correctness] The loop iterates through basePeriods and updates `active` whenever `p.timeFrom <= now`, but never breaks early. This is correct for finding the latest base period, but if periods are not sorted by timeFrom, the result may be order-dependent. Verify that forecasts from the upstream are always sorted by timeFrom ascending.
+- EXTRA `packages/client/src/components/Map/AirportPopup.tsx:1` [useful/contract_drift] The change adds `useState` to imports but the component also calls `useState` at line 291 for TAF section state management. Verify that `useState` is actually used from React and not accidentally shadowed or re-imported elsewhere in the file.
+- EXTRA `packages/server/src/services/taf-poller.ts:189` [useful/error_handling] The fetch uses `AbortSignal.timeout(FETCH_TIMEOUT_MS)` which may not be supported in older Node.js versions. Confirm the deployment environment supports AbortSignal.timeout before merging.
 
 ### #121 cjunks94/exportee-rails
 - MISS `app/services/sources/salesforce_adapter.rb:45` [useful/perf] extract accumulates entire SOQL result in memory; a multi-million-row Account export would OOM the worker
-- EXTRA `app/services/sources/salesforce_adapter.rb:66` [useful/missing_nil_guard] config.fetch('api_version', nil) can return nil, which is then passed to Restforce.new. If Restforce expects a string or rejects nil, this should use config['api_version'] without fetch, or validate before passing.
-- EXTRA `app/services/sources/salesforce_adapter.rb:74` [useful/contract_drift] The fallback to config in credentials method (line 74) contradicts the docstring (lines 6-12) which states credentials are resolved via from_secret, not from config; this ambiguity may cause confusion about where secrets are loaded.
 
 ### #101 cjunks94/exportee-rails
 - MISS `app/controllers/api/v1/base_controller.rb:83` [useful/security] bad_request_with_message renders raw exception.message from ArgumentError; risks leaking internal context (CLAUDE.md: error messages must not leak internal details)
-- EXTRA `app/controllers/api/v1/base_controller.rb:61` [useful/null_safety] The unprocessable handler accesses exception.record without checking if it exists. If ActiveRecord::RecordInvalid is raised without a record context, this will throw NoMethodError instead of returning a graceful error response.
-- EXTRA `spec/requests/api/v1/widgets_spec.rb:183` [useful/test_isolation] The delete test calls existing_widget.reload after the request completes, but the test does not verify that the response itself succeeded (e.g., status 204). The reload could fail silently if the discard! call didn't persist, masking the actual response failure.
+- EXTRA `app/controllers/api/v1/base_controller.rb:61` [useful/nil_guard] exception.record may be nil for some ActiveRecord::RecordInvalid instances (e.g., when raised manually without a record). The code should guard against this or document the assumption that record is always present.
+- EXTRA `spec/requests/api/v1/widgets_spec.rb:183` [useful/test_isolation] The test reloads existing_widget after the DELETE request, but this variable is scoped to the response block and may not persist as expected across the run_test! boundary. Consider storing the uuid and reloading by primary key instead.
 
 ### #59 cjunks94/panoptrain
 - MISS `packages/client/src/lib/scheduleIdle.ts:18` [useful/correctness] setTimeout fallback hardcodes 1ms and ignores the timeoutMs parameter; docstring promises 'soon-ish' upper bound but fallback fires next tick regardless of caller intent
-- EXTRA `packages/client/src/hooks/useTrainFeatures.ts:182` [useful/logic_error] The empty-index guard `Object.keys(index).length === 0` returns early, but `index` is read from `shapeIndexRef.current` which was just set to `{}` synchronously on line 101 when routeShapes changes. This means the guard will always trigger on the first data arrival after a mode switch, even though the deferred build is in progress. The dependency on `shapeIndexVersion` re-triggers the effect once the build lands, so trains animate correctly on the next poll, but the early return wastes the first poll's data without attempting interpolation.
-- EXTRA `packages/client/src/hooks/useTrainFeatures.ts:205` [useful/logic_error] Line 205 removed the check `Object.keys(index).length === 0` from `processSlice`, but the outer effect already has an identical guard on line 182 that exits early if the index is empty. This means `processSlice` will never be called with an empty index—the guard is redundant now. However, the real issue is that by removing this guard from `processSlice` itself, if somehow the index becomes empty between when the outer effect ran and when a slice executes (unlikely but theoretically possible), the slice could process trains against an incomplete index without detecting the problem.
+- EXTRA `packages/client/src/hooks/useTrainFeatures.ts:182` [useful/logic_error] The guard `if (Object.keys(index).length === 0) return;` immediately after line 181 checks the empty-index condition, but line 204 then removes the same guard from `processSlice`, assuming the parent effect already filtered it. If `scheduleIdle` schedules the callback asynchronously and `shapeIndexRef.current` is cleared between the effect setup and the callback execution, `processSlice` could run with an empty index and violate the invariant documented in the effect's comment.
 
 ### #54 cjunks94/panoptrain
-- EXTRA `packages/client/src/hooks/useAircraftFeatures.ts:97` [useful/correctness_bug] The logic gates the main aircraft update effect with `if (!enabled) return`, but this means when transitioning from airspace mode (enabled=false) back to a transit mode (enabled=true), the effect skips on the first render if enabled is already true. The cleared state from lines 98-101 never runs again, but new aircraft data from the poll may arrive stale. Consider ensuring the state reset always completes before the next poll cycle, or explicitly resync aircraft on the enabled→true transition.
-- EXTRA `packages/client/src/hooks/useTrainPositions.ts:42` [useful/logic_issue] When `getLastTrains(mode)` returns cached data at line 42, the code sets both `data` and `fetchedAt` synchronously (lines 44-45), but the stale check at line 46 always sets `isStale` to false. If the cached data is older than the server's staleness threshold, the UI will incorrectly show it as fresh until the next poll completes. Consider passing a staleness threshold to `getLastTrains` or checking the age of `fetchedAt` before marking `isStale = false`.
-- EXTRA `packages/client/src/lib/__tests__/trackInterpolation.test.ts:72` [useful/test_gap] The renamed test 'schedules independent prewarms...' changes the assertion from verifying that the first prewarm was *cancelled* (cleared array should contain 1) to verifying no cancellations happen. The test now expects both prewarms to run, but there is no assertion that the snap cache is correctly populated after both run, nor verification that stale data from the first prewarm doesn't pollute the final state. Add an assertion that verifies cache correctness or sample distribution across both prewarms.
+- EXTRA `packages/client/src/hooks/useTrainPositions.ts:42` [useful/Logic Error] The cache hydration logic at line 42–51 sets stale data from a prior poll without marking it as stale. When getLastTrains() returns cached data, the code sets isStale=false, but this stale cached data should probably be marked isStale=true to trigger an immediate refresh in the background, consistent with the intent stated in the comment ('so the user sees the last-known trains instantly while a fresh poll lands in the background').
+- EXTRA `packages/client/src/hooks/useTrainFeatures.ts:95` [useful/Comment/Code Drift] The comment at lines 80–94 explains why prevPositions, currPositions, and trackPaths are cleared on mode change, but line 100 also resets lastRenderedFraction.current = -1. This reset is not mentioned in the lengthy justification, creating a minor documentation gap that could confuse future maintainers about whether the reset is intentional.
 
 ### #117 cjunks94/exportee-rails
-- HIT `app/services/transforms/data_frame_pipeline.rb:101` [useful/error_handling] Line 101 calls Widgets::Builtins.const_get without guarding against NameError if the widget class does not exist. This will crash the Polars path while the legacy row-by-row path might handle it more gracefully.
-- EXTRA `app/services/exports/executor.rb:102` [useful/cross_device_copy] FileUtils.cp at line 102 may fail if dest_path is on a different filesystem; atomic rename (mv) after writing to a sibling .tmp file in the same destination directory would be safer for concurrent readers.
-- EXTRA `app/services/transforms/data_frame_pipeline.rb:31` [useful/column_order] Line 31 selects columns in mapping_fields order but only those present in df.columns. If a required mapping field is missing from the transform output, it will silently be omitted from the CSV with no warning.
+- HIT `app/services/transforms/data_frame_pipeline.rb:101` [useful/undefined_constant] Widgets::Builtins.const_get will raise NameError if the widget class does not exist. This fallback path should guard against missing widget implementations to avoid crashing during export.
+- EXTRA `app/services/transforms/data_frame_pipeline.rb:103` [useful/silent_data_loss] filter_map silently discards nil/false results from builtin.call. If a widget's row-by-row implementation returns nil for some rows (e.g., a filter that rejects), those rows disappear without logging, which may differ from Polars behavior and hide data issues.
+- EXTRA `app/services/exports/executor.rb:92` [useful/uncaught_exception] If Transforms::DataFramePipeline.call_and_write_csv raises an exception, the tempfile.ensure block will still run, but the exception will propagate up without logging context about which export or pipeline failed, making debugging harder.
