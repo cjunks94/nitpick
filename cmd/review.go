@@ -41,7 +41,11 @@ func Review(ctx context.Context, args []string) error {
 			return fmt.Errorf("detect repo (pass --repo to override): %w", derr)
 		}
 		*repo = detected
-	} else if _, _, perr := ghc.ParseRepoArg(*repo); perr != nil {
+	}
+	// Validate on both paths so every downstream `gh` invocation (FetchDiff,
+	// PostReview, PostIssueComment) sees an owner/name it can trust — the
+	// #nosec annotations there depend on it.
+	if _, _, perr := ghc.ParseRepoArg(*repo); perr != nil {
 		return perr
 	}
 
@@ -79,10 +83,19 @@ func Review(ctx context.Context, args []string) error {
 		return err
 	}
 
+	// context_notes goes to the provider as a system block. Redact it under
+	// the same rule as the diff: nothing leaves the process with a credential
+	// in it. Copy first so the loaded config is not mutated.
+	reviewCfg := cfg.Review
+	if redacted, n := secrets.RedactBytes([]byte(reviewCfg.ContextNotes)); n > 0 {
+		fmt.Fprintf(os.Stderr, "nitpick: redacted %d line(s) of context_notes before sending to the provider\n", n)
+		reviewCfg.ContextNotes = string(redacted)
+	}
+
 	start := time.Now()
 	result, err := p.Review(ctx, provider.ReviewRequest{
 		Hunks:  hunks,
-		Config: cfg.Review,
+		Config: reviewCfg,
 	})
 	if err != nil {
 		return fmt.Errorf("review: %w", err)

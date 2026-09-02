@@ -104,7 +104,7 @@ Requires the App to be subscribed to all three event types — see [`DEPLOY.md`]
 
 ## What leaves your repo
 
-Everything nitpick reviews is sent to Anthropic, so credentials are stripped before the call — on the diff and the context-file paths, on both `serve` and the `review` CLI. On by default, no configuration needed. (`review.ignore_paths` is opt-in and was never a safe place to rely on for this.)
+Everything nitpick reviews is sent to the configured provider (Anthropic today), so credentials are stripped before the call — on the diff and the context-file paths, on both `serve` and the `review` CLI. On by default, no configuration needed. (`review.ignore_paths` is opt-in and was never a safe place to rely on for this.)
 
 | Where | What happens | Why |
 |---|---|---|

@@ -870,7 +870,13 @@ func (h *Handler) reviewPR(ctx context.Context, log *slog.Logger, t reviewTarget
 		return
 	}
 
-	repoCfg := fetchRepoConfig(ctx, log, client, repo, configRef(t))
+	var repoCfg *config.Config
+	if ref := configRef(t); ref != "" {
+		repoCfg = fetchRepoConfig(ctx, log, client, repo, ref)
+	} else {
+		log.Warn("repo config not loaded",
+			"reason", "head is untrusted and base ref is unknown; refusing to read .nitpick.yaml from the head SHA")
+	}
 	var (
 		repoNotes   []byte
 		ignorePaths []string
@@ -1006,14 +1012,16 @@ const (
 // strong hint into a hard constraint, and it inverts the point of automation:
 // the bot exists to catch what review misses.
 //
-// Falling back to the head SHA when BaseRef is unknown keeps behaviour
-// unchanged for payloads that predate this field rather than failing the
-// review outright.
+// Returns "" when the head is untrusted and BaseRef is unknown. The only safe
+// ref in that state is the head SHA, which is exactly the one that must not
+// be read — so the caller skips config loading and reviews with built-in
+// defaults. Falling back to the head SHA there would reopen the injection
+// path for any payload shape that omits base.ref.
 func configRef(t reviewTarget) string {
-	if t.HeadIsUntrusted && t.BaseRef != "" {
-		return t.BaseRef
+	if !t.HeadIsUntrusted {
+		return t.HeadSHA
 	}
-	return t.HeadSHA
+	return t.BaseRef
 }
 
 // fetchRepoConfig pulls .nitpick.yaml from the repo at the given ref (see
@@ -1021,16 +1029,16 @@ func configRef(t reviewTarget) string {
 // missing, too large, or malformed — diff-only review with built-in defaults
 // is the graceful fallback. The returned config may still have empty fields
 // (e.g. no context_notes); callers should check each field independently.
-func fetchRepoConfig(ctx context.Context, log *slog.Logger, client *ghc.HTTPClient, repo, sha string) *config.Config {
+func fetchRepoConfig(ctx context.Context, log *slog.Logger, client *ghc.HTTPClient, repo, ref string) *config.Config {
 	// Always log the load state at INFO. Each terminal state gets one log
 	// line so a reader can answer "did notes apply on this review?" without
 	// expanding to debug level. The prior implementation logged the absent /
 	// empty cases at DEBUG, which silently hid load failures when diagnosing
 	// false positives.
-	content, err := client.FetchFile(ctx, repo, sha, repoConfigPath)
+	content, err := client.FetchFile(ctx, repo, ref, repoConfigPath)
 	if err != nil {
 		if errors.Is(err, ghc.ErrFileNotFound) {
-			log.Info("repo config not loaded", "reason", "no .nitpick.yaml at head SHA")
+			log.Info("repo config not loaded", "reason", "no .nitpick.yaml at ref", "ref", ref)
 		} else {
 			// Auth, rate-limit, or transport failure — surface so the operator
 			// can tell a real GitHub problem apart from the (common) absence
@@ -1052,6 +1060,13 @@ func fetchRepoConfig(ctx context.Context, log *slog.Logger, client *ghc.HTTPClie
 			"reason", ".nitpick.yaml parse failed",
 			"err", err)
 		return nil
+	}
+	// context_notes is a system block sent to the provider verbatim. Same
+	// rule as the diff and context files: nothing leaves the process with a
+	// credential in it, however it got there.
+	if redacted, n := secrets.RedactBytes([]byte(cfg.Review.ContextNotes)); n > 0 {
+		log.Warn("context_notes contained credentials; redacted", "lines", n)
+		cfg.Review.ContextNotes = string(redacted)
 	}
 	notes := cfg.Review.ContextNotes
 	switch {

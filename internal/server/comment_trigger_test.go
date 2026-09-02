@@ -495,8 +495,15 @@ func TestConfigRef_ForkReadsBaseBranch(t *testing.T) {
 			want:   "main",
 		},
 		{
-			name:   "fork PR with unknown base falls back to head",
+			// Fail closed: the head SHA is the one ref that must not be read
+			// here, so an unknown base means no config at all.
+			name:   "fork PR with unknown base loads no config",
 			target: reviewTarget{HeadSHA: "deadbeef", BaseRef: "", HeadIsUntrusted: true},
+			want:   "",
+		},
+		{
+			name:   "same-repo PR with unknown base still reads its head",
+			target: reviewTarget{HeadSHA: "deadbeef", BaseRef: "", HeadIsUntrusted: false},
 			want:   "deadbeef",
 		},
 	}
@@ -511,6 +518,7 @@ func TestConfigRef_ForkReadsBaseBranch(t *testing.T) {
 
 // Suppress unused-import warnings if the file becomes the only one using these.
 var _ atomic.Int32
+
 // The authorization gate must be ON for a Handler built as a struct literal.
 //
 // The field is phrased as an opt-OUT precisely so the zero value is safe. The

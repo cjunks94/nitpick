@@ -130,3 +130,25 @@ review:
 		t.Errorf("invalid glob should fail Parse, got: %+v", got)
 	}
 }
+
+// context_notes is injected into the system prompt verbatim, so it is one more
+// channel through which a credential can leave the repo. Redaction must apply
+// to it like it does to the diff and context files.
+func TestFetchRepoConfig_RedactsCredentialsInContextNotes(t *testing.T) {
+	key := "ghp_" + "abcdefghijklmnopqrstuvwxyz0123456789"
+	srv := fakeRepoConfig(t, "review:\n  context_notes: |\n    Use token "+key+" for the API.\n    Second line stays.\n")
+	defer srv.Close()
+	client := &ghc.HTTPClient{BaseURL: srv.URL, Token: "test", HTTPClient: srv.Client()}
+
+	got := fetchRepoConfig(context.Background(), silentLogger(), client, "owner/repo", "abc")
+	if got == nil {
+		t.Fatal("expected config, got nil")
+	}
+	notes := got.Review.ContextNotes
+	if strings.Contains(notes, key) {
+		t.Fatalf("credential survived redaction: %q", notes)
+	}
+	if !strings.Contains(notes, "Second line stays.") {
+		t.Fatalf("redaction damaged surrounding text: %q", notes)
+	}
+}

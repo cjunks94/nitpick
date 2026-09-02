@@ -23,7 +23,9 @@ func silentLogger() *slog.Logger {
 }
 
 // fakeGitHub stands in for the GitHub Contents API. Routes:
-//   GET /repos/{owner}/{repo}/contents/{path}?ref={sha}  → returns raw bytes
+//
+//	GET /repos/{owner}/{repo}/contents/{path}?ref={sha}  → returns raw bytes
+//
 // Returns 200 with raw content for paths in the seeded map, 404 otherwise.
 func fakeGitHub(t *testing.T, files map[string]string) *httptest.Server {
 	t.Helper()
@@ -141,10 +143,10 @@ func TestFetchContextFiles_GracefulOn404(t *testing.T) {
 func TestFetchContextFiles_FiltersDeniedExtensionsAndFilenames(t *testing.T) {
 	srv := fakeGitHub(t, map[string]string{
 		"scripts/health.gd":     "package; func health()",
-		"scripts/health.gd.uid": "uid://abc",       // denied by extension
-		"go.sum":                "sha256-hash",     // denied by basename
-		"yarn.lock":             "{}",              // denied by basename
-		"bundle.min.js":         "var x=1;",        // denied by extension
+		"scripts/health.gd.uid": "uid://abc",   // denied by extension
+		"go.sum":                "sha256-hash", // denied by basename
+		"yarn.lock":             "{}",          // denied by basename
+		"bundle.min.js":         "var x=1;",    // denied by extension
 		"src/real.go":           "package x",
 	})
 	defer srv.Close()
@@ -178,9 +180,9 @@ func TestFetchContextFiles_FiltersDeniedExtensionsAndFilenames(t *testing.T) {
 // edges out a 200-line new test file later.
 func TestFetchContextFiles_SortsByChangeWeightDescending(t *testing.T) {
 	files := map[string]string{
-		"tiny.go":       "x",
-		"medium.go":     "x",
-		"big_test.go":   "x",
+		"tiny.go":         "x",
+		"medium.go":       "x",
+		"big_test.go":     "x",
 		"another_test.go": "x",
 	}
 	srv := fakeGitHub(t, files)
@@ -218,6 +220,7 @@ func TestFetchContextFiles_SortsByChangeWeightDescending(t *testing.T) {
 // the package that uses these — keeps the build clean across refactors.
 var _ = json.Marshal
 var _ = base64.StdEncoding
+
 // configRef governs whether a PR can supply its own reviewer instructions via
 // .nitpick.yaml. The unknown-origin cases must fail closed: GitHub sends
 // head.repo: null once a contributor deletes their fork, and the head commit

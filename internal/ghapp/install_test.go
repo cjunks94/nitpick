@@ -45,12 +45,12 @@ func TestRedactTokens(t *testing.T) {
 		{
 			name:  "oauth token",
 			token: fakeToken("gho_"),
-			body: func(tok string) string { return `{"token":"` + tok + `"}` },
+			body:  func(tok string) string { return `{"token":"` + tok + `"}` },
 		},
 		{
 			name:  "refresh token",
 			token: fakeToken("ghr_"),
-			body: func(tok string) string { return `{"refresh_token":"` + tok + `"}` },
+			body:  func(tok string) string { return `{"refresh_token":"` + tok + `"}` },
 		},
 	}
 	for _, tt := range tests {
