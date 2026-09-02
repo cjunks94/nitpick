@@ -9,7 +9,7 @@ Cases: 20  ·  Expected findings: 7  ·  Produced: 6
 | Recall (critical) | 0.000 |
 | Recall (useful) | 0.143 |
 | Noise rate | 0.667 |
-| Avg $/PR | $0.0185 |
+| Avg $/PR | $0.0186 |
 
 ## Per-case
 | PR | Repo | Expected | Hits | Misses | Extras | $ |
@@ -22,13 +22,13 @@ Cases: 20  ·  Expected findings: 7  ·  Produced: 6
 | #29 | cjunks94/agentic-portfolio | 1 | 0 | 1 | 0 | $0.0154 |
 | #25 | cjunks94/agentic-portfolio | 0 | 0 | 0 | 0 | $0.0206 |
 | #56 | cjunks94/panoptrain | 1 | 0 | 1 | 0 | $0.0923 |
-| #121 | cjunks94/exportee-rails | 1 | 1 | 0 | 1 | $0.0306 |
-| #101 | cjunks94/exportee-rails | 1 | 0 | 1 | 1 | $0.0134 |
+| #121 | cjunks94/exportee-rails | 1 | 1 | 0 | 1 | $0.0308 |
+| #101 | cjunks94/exportee-rails | 1 | 0 | 1 | 1 | $0.0138 |
 | #28 | cjunks94/agentic-portfolio | 0 | 0 | 0 | 0 | $0.0049 |
 | #27 | cjunks94/agentic-portfolio | 0 | 0 | 0 | 0 | $0.0059 |
 | #59 | cjunks94/panoptrain | 1 | 0 | 1 | 0 | $0.0138 |
 | #54 | cjunks94/panoptrain | 0 | 0 | 0 | 0 | $0.0371 |
-| #117 | cjunks94/exportee-rails | 1 | 1 | 0 | 1 | $0.0211 |
+| #117 | cjunks94/exportee-rails | 1 | 1 | 0 | 1 | $0.0218 |
 | #69 | cjunks94/resume-improvements | 0 | 0 | 0 | 0 | $0.0779 |
 | #64 | cjunks94/resume-improvements | 0 | 0 | 0 | 0 | $0.0020 |
 | #57 | cjunks94/resume-improvements | 0 | 0 | 0 | 1 | $0.0040 |
