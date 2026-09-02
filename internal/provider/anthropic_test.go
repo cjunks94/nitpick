@@ -294,6 +294,19 @@ func TestParseFindings_CandidateSelection(t *testing.T) {
 			wantLen: 1,
 		},
 		{
+			// A valid earlier object whose string VALUE is "findings" matches
+			// the anchor and unmarshals fine — with zero findings. It must not
+			// be accepted in place of the real review after it.
+			name:    "earlier valid object without a findings key is skipped",
+			text:    `{"mode":"findings"}` + "\n" + valid,
+			wantLen: 1,
+		},
+		{
+			name:    "bare object without findings key is a silent review",
+			text:    `{"ok":true}`,
+			wantLen: 0,
+		},
+		{
 			name:    "genuinely malformed object still errors",
 			text:    `{"findings":[{"file":"a.go","line":}]}`,
 			wantErr: true,

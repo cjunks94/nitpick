@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -205,7 +206,11 @@ func parseFindings(text string) ([]Comment, error) {
 		if end <= 0 {
 			return nil, nil // unterminated object → silent
 		}
-		return unmarshalFindings(text[:end+1])
+		out, err := unmarshalFindings(text[:end+1])
+		if errors.Is(err, errNoFindingsKey) {
+			return nil, nil // well-formed object, just not a review → silent
+		}
+		return out, err
 	}
 
 	var firstErr error
@@ -216,11 +221,17 @@ func parseFindings(text string) ([]Comment, error) {
 			if end <= anchor {
 				continue // does not enclose the anchor, or unterminated
 			}
-			tried = true
 			out, err := unmarshalFindings(text[start : end+1])
 			if err == nil {
 				return out, nil
 			}
+			if errors.Is(err, errNoFindingsKey) {
+				// Valid JSON that merely contains the word — e.g. an earlier
+				// object with "findings" as a string value. Not a review;
+				// keep scanning without letting it count as a parse failure.
+				continue
+			}
+			tried = true
 			if firstErr == nil {
 				firstErr = err
 			}
@@ -237,10 +248,16 @@ func parseFindings(text string) ([]Comment, error) {
 	return nil, firstErr
 }
 
+// errNoFindingsKey marks a candidate that is valid JSON but has no top-level
+// "findings" member — an object that happens to contain the word, not a
+// review. Candidate selection skips these rather than accepting an empty
+// review from them.
+var errNoFindingsKey = errors.New("no top-level findings key")
+
 // unmarshalFindings decodes one candidate JSON object into comments.
 func unmarshalFindings(text string) ([]Comment, error) {
 	var payload struct {
-		Findings []struct {
+		Findings *[]struct {
 			File     string  `json:"file"`
 			Line     flexInt `json:"line"`
 			Severity string  `json:"severity"`
@@ -251,9 +268,12 @@ func unmarshalFindings(text string) ([]Comment, error) {
 	if err := json.Unmarshal([]byte(text), &payload); err != nil {
 		return nil, err
 	}
+	if payload.Findings == nil {
+		return nil, errNoFindingsKey
+	}
 
-	out := make([]Comment, 0, len(payload.Findings))
-	for _, f := range payload.Findings {
+	out := make([]Comment, 0, len(*payload.Findings))
+	for _, f := range *payload.Findings {
 		sev := Severity(f.Severity)
 		if sev != SeverityCritical && sev != SeverityUseful && sev != SeverityNit {
 			sev = SeverityUseful // be charitable on unknown labels
