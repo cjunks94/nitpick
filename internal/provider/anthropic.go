@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -188,24 +189,75 @@ func parseFindings(text string) ([]Comment, error) {
 	// Anchor on the `"findings"` key; the JSON object surrounding it is the
 	// one we want. Falls back to first '{' if anchor not found AND the text
 	// starts with '{' (well-formed response with empty object).
-	findingsIdx := strings.Index(text, `"findings"`)
-	if findingsIdx < 0 {
+	//
+	// Both the anchor and its enclosing brace are guesses: prose before the
+	// JSON can mention "findings" in quotes, and a '{' inside an earlier
+	// string value is not an object start. So rather than committing to the
+	// first guess, try candidates — each anchor in order, each enclosing '{'
+	// nearest-first — and accept the first one that actually unmarshals. The
+	// first candidate is exactly what the single-guess version chose, so any
+	// response that parsed before parses identically now; the extra work only
+	// runs on responses that would otherwise have been discarded.
+	if !strings.Contains(text, `"findings"`) {
 		if !strings.HasPrefix(text, "{") {
 			return nil, nil // prose-only response → silent review
 		}
-		findingsIdx = 0
-	}
-	start := strings.LastIndex(text[:findingsIdx+1], "{")
-	if start < 0 {
-		return nil, nil // findings key but no enclosing brace → silent
-	}
-	end := matchingBrace(text, start)
-	if end <= start {
-		return nil, nil // unterminated object → silent
+		end := matchingBrace(text, 0)
+		if end <= 0 {
+			return nil, nil // unterminated object → silent
+		}
+		out, err := unmarshalFindings(text[:end+1])
+		if errors.Is(err, errNoFindingsKey) {
+			return nil, nil // well-formed object, just not a review → silent
+		}
+		return out, err
 	}
 
+	var firstErr error
+	tried := false
+	for anchor := strings.Index(text, `"findings"`); anchor >= 0; {
+		for start := strings.LastIndex(text[:anchor+1], "{"); start >= 0; start = strings.LastIndex(text[:start], "{") {
+			end := matchingBrace(text, start)
+			if end <= anchor {
+				continue // does not enclose the anchor, or unterminated
+			}
+			out, err := unmarshalFindings(text[start : end+1])
+			if err == nil {
+				return out, nil
+			}
+			if errors.Is(err, errNoFindingsKey) {
+				// Valid JSON that merely contains the word — e.g. an earlier
+				// object with "findings" as a string value. Not a review;
+				// keep scanning without letting it count as a parse failure.
+				continue
+			}
+			tried = true
+			if firstErr == nil {
+				firstErr = err
+			}
+		}
+		next := strings.Index(text[anchor+1:], `"findings"`)
+		if next < 0 {
+			break
+		}
+		anchor += 1 + next
+	}
+	if !tried {
+		return nil, nil // findings key but no enclosing object → silent
+	}
+	return nil, firstErr
+}
+
+// errNoFindingsKey marks a candidate that is valid JSON but has no top-level
+// "findings" member — an object that happens to contain the word, not a
+// review. Candidate selection skips these rather than accepting an empty
+// review from them.
+var errNoFindingsKey = errors.New("no top-level findings key")
+
+// unmarshalFindings decodes one candidate JSON object into comments.
+func unmarshalFindings(text string) ([]Comment, error) {
 	var payload struct {
-		Findings []struct {
+		Findings *[]struct {
 			File     string  `json:"file"`
 			Line     flexInt `json:"line"`
 			Severity string  `json:"severity"`
@@ -213,12 +265,15 @@ func parseFindings(text string) ([]Comment, error) {
 			Body     string  `json:"body"`
 		} `json:"findings"`
 	}
-	if err := json.Unmarshal([]byte(text[start:end+1]), &payload); err != nil {
+	if err := json.Unmarshal([]byte(text), &payload); err != nil {
 		return nil, err
 	}
+	if payload.Findings == nil {
+		return nil, errNoFindingsKey
+	}
 
-	out := make([]Comment, 0, len(payload.Findings))
-	for _, f := range payload.Findings {
+	out := make([]Comment, 0, len(*payload.Findings))
+	for _, f := range *payload.Findings {
 		sev := Severity(f.Severity)
 		if sev != SeverityCritical && sev != SeverityUseful && sev != SeverityNit {
 			sev = SeverityUseful // be charitable on unknown labels
