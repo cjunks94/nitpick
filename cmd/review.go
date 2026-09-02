@@ -97,14 +97,23 @@ func Review(ctx context.Context, args []string) error {
 		if cerr != nil {
 			fmt.Fprintf(os.Stderr, "warning: could not load existing comments for dedup: %v\n", cerr)
 		} else {
-			for _, c := range ghc.FilterByAuthor(existing, crCfg.BotLogins()) {
+			// ListPRComments returns inline comments before top-level ones,
+			// so a plain prefix cap keeps the half that actually overlaps —
+			// same rule as the serve path.
+			hits := ghc.FilterByAuthor(existing, crCfg.BotLogins())
+			dropped := 0
+			if len(hits) > provider.MaxPriorFindings {
+				dropped = len(hits) - provider.MaxPriorFindings
+				hits = hits[:provider.MaxPriorFindings]
+			}
+			for _, c := range hits {
 				priorFindings = append(priorFindings, provider.PriorFinding{
 					Author: c.Author, Path: c.Path, Line: c.Line, Body: c.Body,
 				})
 			}
 			if len(priorFindings) > 0 {
-				fmt.Fprintf(os.Stderr, "dedup: %d existing CodeRabbit comment(s) shown to the reviewer\n",
-					len(priorFindings))
+				fmt.Fprintf(os.Stderr, "dedup: %d existing CodeRabbit comment(s) shown to the reviewer (%d over cap dropped)\n",
+					len(priorFindings), dropped)
 			}
 		}
 	}

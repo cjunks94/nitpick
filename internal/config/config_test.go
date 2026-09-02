@@ -195,6 +195,9 @@ func TestDuration_Unmarshal(t *testing.T) {
 		{"review:\n  coderabbit:\n    wait_timeout: 300\n", 300 * time.Second, false},
 		{"review:\n  coderabbit:\n    wait_timeout: soon\n", 0, true},
 		{"review:\n  coderabbit:\n    wait_timeout: -5m\n", 0, true},
+		// 9223372037 s * 1e9 overflows int64 and would wrap negative.
+		{"review:\n  coderabbit:\n    wait_timeout: 9223372037\n", 0, true},
+		{"review:\n  coderabbit:\n    wait_timeout: 9223372036\n", 9223372036 * time.Second, false},
 	}
 	for _, tt := range tests {
 		cfg, err := Parse([]byte(tt.yaml))

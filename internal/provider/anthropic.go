@@ -11,6 +11,7 @@ import (
 
 	"github.com/cjunks94/nitpick/internal/diff"
 	"github.com/cjunks94/nitpick/internal/prompt"
+	"github.com/cjunks94/nitpick/internal/secrets"
 )
 
 // flexInt accepts JSON numbers OR strings convertible to int. Anthropic
@@ -315,8 +316,13 @@ func renderUserMessage(req ReviewRequest) string {
 			} else if pf.Line > 0 {
 				where = fmt.Sprintf("%s:%d", pf.Path, pf.Line)
 			}
+			// Another bot's comment can quote the very secret it is
+			// flagging. Same rule as the diff: nothing leaves the process
+			// with a credential in it. Redact before truncating so a cut
+			// can't leave a partial key that still matches a scanner.
+			body, _ := secrets.RedactBytes([]byte(pf.Body))
 			fmt.Fprintf(&b, "--- %s by @%s ---\n%s\n\n",
-				where, pf.Author, truncate(strings.TrimSpace(pf.Body), 1200))
+				where, pf.Author, truncate(strings.TrimSpace(string(body)), 1200))
 		}
 	}
 

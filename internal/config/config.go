@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"math"
 	"os"
 	"strconv"
 	"time"
@@ -131,6 +132,12 @@ func (d *Duration) UnmarshalYAML(value *yaml.Node) error {
 		if n, nerr := strconv.ParseInt(s, 10, 64); nerr == nil {
 			if n < 0 {
 				return fmt.Errorf("duration %q must not be negative", s)
+			}
+			// time.Duration is int64 nanoseconds; multiplying an unchecked
+			// int64 by time.Second wraps negative past ~292 years and would
+			// pass the negative check above only by accident of ordering.
+			if n > math.MaxInt64/int64(time.Second) {
+				return fmt.Errorf("duration %q is too large", s)
 			}
 			*d = Duration(time.Duration(n) * time.Second)
 			return nil

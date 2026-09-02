@@ -28,7 +28,8 @@ review:
   # what CodeRabbit would have said.
   coderabbit:
     # Fetch CodeRabbit's comments and dedupe against them. Default: true.
-    # Costs one extra GitHub call per review.
+    # Costs two extra GitHub requests per review (inline + top-level
+    # comments), more on PRs with enough comments to paginate.
     enabled: true
 
     # Logins treated as CodeRabbit. Override for enterprise/self-hosted

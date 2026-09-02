@@ -274,7 +274,7 @@ review:
     poll_interval: 15s     # floor 5s
 ```
 
-- **`enabled`** (default on) costs one extra GitHub call per review. Inline comments are prioritised over CodeRabbit's walkthrough summary, since that's where overlap actually happens.
+- **`enabled`** (default on) costs two extra GitHub requests per review (inline and top-level comments), more on PRs with enough comments to paginate. Inline comments are prioritised over CodeRabbit's walkthrough summary, since that's where overlap actually happens.
 - **`wait`** (default off) makes ordering deterministic so the dedup always has data. Only worth turning on where CodeRabbit is reliably installed — otherwise every review pays `wait_timeout` before giving up. nitpick **never** skips a review because of the wait; on timeout it proceeds with whatever it has. Re-reviews only count comments posted *after* the current run started, so stale comments from a previous push don't satisfy the wait.
 - `wait` applies to `nitpick serve` only. The `nitpick review` CLI still dedupes but doesn't block — holding a terminal or a billed Actions minute on another bot is the wrong default.
 

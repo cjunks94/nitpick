@@ -39,6 +39,13 @@ type ReviewRequest struct {
 	PriorFindings []PriorFinding
 }
 
+// MaxPriorFindings caps how many prior comments reach the prompt. Beyond this
+// the marginal dedup value drops off fast while the token cost keeps climbing.
+// Callers should order inline comments before top-level ones before capping,
+// since that's where real overlap lives. Shared by serve and the review CLI so
+// the two surfaces can't drift.
+const MaxPriorFindings = 25
+
 // PriorFinding is one comment an earlier reviewer left on the PR. Line is 0
 // for top-level comments (CodeRabbit's walkthrough / summary posts).
 type PriorFinding struct {

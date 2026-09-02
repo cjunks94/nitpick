@@ -19,11 +19,9 @@ const (
 	defaultCodeRabbitPollInterval = 15 * time.Second
 	minCodeRabbitPollInterval     = 5 * time.Second
 
-	// maxPriorFindingsInPrompt caps how many prior comments reach the prompt.
-	// Beyond this the marginal dedup value drops off fast while the token
-	// cost keeps climbing; inline comments are kept in preference to
-	// top-level ones because that's where real overlap lives.
-	maxPriorFindingsInPrompt = 25
+	// Inline comments are kept in preference to top-level ones when the
+	// cap bites; see provider.MaxPriorFindings.
+	maxPriorFindingsInPrompt = provider.MaxPriorFindings
 )
 
 // fetchPriorFindings collects the comments another reviewer has already left
@@ -130,8 +128,14 @@ func waitForCodeRabbit(
 		"timeout_s", int(timeout.Seconds()),
 		"poll_s", int(poll.Seconds()))
 
+	// The poll requests share the deadline. Without this a GitHub call that
+	// hangs (the client has no per-request timeout of its own) would pin the
+	// wait — and its concurrency slot — well past the configured ceiling.
+	pollCtx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
+
 	for attempt := 1; ; attempt++ {
-		if hasPostedSince(ctx, client, repo, prNum, logins, since) {
+		if hasPostedSince(pollCtx, client, repo, prNum, logins, since) {
 			log.Info("coderabbit has posted; proceeding", "polls", attempt)
 			return
 		}

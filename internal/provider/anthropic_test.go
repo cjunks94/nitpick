@@ -236,3 +236,31 @@ func TestRenderUserMessage_NoPriorFindingsBlockWhenEmpty(t *testing.T) {
 		t.Error("prior-findings block should be omitted entirely when there are none")
 	}
 }
+
+// A prior finding can quote the credential it is flagging. It must be masked
+// on its way into the prompt like every other payload.
+func TestRenderUserMessage_RedactsSecretsInPriorFindings(t *testing.T) {
+	tok := "ghp_" + "abcdefghijklmnopqrstuvwxyz0123456789"
+	// Assembled from pieces so the literal never appears in source — the
+	// repo's own gitleaks job would otherwise flag this fixture.
+	pem := "-----BEGIN " + "RSA PRIVATE" + " KEY-----\nMIIEowIBAAKCAQEA0Z3VS5JJcds3xfn\nQ2c6z1Qm8ZK7hdJ2z3Fj\n" +
+		"-----END " + "RSA PRIVATE" + " KEY-----"
+	msg := renderUserMessage(ReviewRequest{
+		Hunks: []diff.Hunk{{File: "a.go"}},
+		PriorFindings: []PriorFinding{
+			{Author: "coderabbitai[bot]", Path: "cfg.go", Line: 3, Body: "Hardcoded token " + tok + " here."},
+			{Author: "coderabbitai[bot]", Path: "key.pem", Line: 1, Body: "Committed key:\n" + pem},
+		},
+	})
+	if strings.Contains(msg, tok) {
+		t.Errorf("token survived into the prompt:\n%s", msg)
+	}
+	if strings.Contains(msg, "MIIEowIBAAKCAQEA0Z3VS5JJcds3xfn") {
+		t.Errorf("private key body survived into the prompt:\n%s", msg)
+	}
+	for _, keep := range []string{"cfg.go:3", "Hardcoded token", "Committed key:"} {
+		if !strings.Contains(msg, keep) {
+			t.Errorf("redaction removed surrounding text %q:\n%s", keep, msg)
+		}
+	}
+}

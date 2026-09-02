@@ -295,3 +295,37 @@ func TestFilterByAuthor_CaseInsensitive(t *testing.T) {
 		t.Fatalf("got %d, want 1 — login matching should be case-insensitive", len(got))
 	}
 }
+
+// A GitHub request that never answers must not extend the wait past its
+// configured ceiling: the poll requests have to carry the deadline too.
+func TestWaitForCodeRabbit_TimeoutCancelsHungRequest(t *testing.T) {
+	released := make(chan struct{}, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Block until the client gives up on us. Non-blocking send: the
+		// second poll request may also land here after the deadline.
+		<-r.Context().Done()
+		select {
+		case released <- struct{}{}:
+		default:
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	start := time.Now()
+	waitForCodeRabbit(context.Background(), silentLogger(), clientFor(srv),
+		"owner/repo", 1, config.CodeRabbitConfig{
+			Wait:         true,
+			WaitTimeout:  config.Duration(100 * time.Millisecond),
+			PollInterval: config.Duration(10 * time.Millisecond),
+		}, time.Now())
+	elapsed := time.Since(start)
+
+	if elapsed > 5*time.Second {
+		t.Fatalf("wait took %v; a hung request must be cut off at WaitTimeout", elapsed)
+	}
+	select {
+	case <-released:
+	case <-time.After(5 * time.Second):
+		t.Fatal("server never saw the request context cancelled")
+	}
+}
