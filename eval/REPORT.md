@@ -1,73 +1,78 @@
 # Eval report — `anthropic-claude-haiku-4-5`
 
-Cases: 20  ·  Expected findings: 7  ·  Produced: 11
+Cases: 20  ·  Expected findings: 7  ·  Produced: 16
 
 Matcher: file + line ±3, plus a label keyword in the body (7 of 7 labels carry keywords)
 
 | Metric | Value |
 |---|---|
-| Precision | 0.091 |
-| Recall (all) | 0.143 |
+| Precision | 0.188 |
+| Recall (all) | 0.429 |
 | Recall (critical) | 0.000 |
-| Recall (useful) | 0.143 |
-| Noise rate | 0.909 |
+| Recall (useful) | 0.429 |
+| Noise rate | 0.812 |
 | Avg $/PR | $0.0077 |
 
 ## Per-case
 | PR | Repo | Expected | Hits | Misses | Extras | $ |
 |---|---|---|---|---|---|---|
-| #87 | cjunks94/resume-improvements | 1 | 0 | 1 | 1 | $0.0035 |
-| #82 | cjunks94/resume-improvements | 0 | 0 | 0 | 0 | $0.0016 |
-| #68 | cjunks94/resume-improvements | 0 | 0 | 0 | 1 | $0.0025 |
-| #44 | cjunks94/panoptrain | 0 | 0 | 0 | 0 | $0.0047 |
+| #87 | cjunks94/resume-improvements | 1 | 0 | 1 | 1 | $0.0037 |
+| #82 | cjunks94/resume-improvements | 0 | 0 | 0 | 0 | $0.0020 |
+| #68 | cjunks94/resume-improvements | 0 | 0 | 0 | 1 | $0.0024 |
+| #44 | cjunks94/panoptrain | 0 | 0 | 0 | 0 | $0.0041 |
 | #4 | cjunks94/hush-hush | 0 | 0 | 0 | 0 | $0.0020 |
-| #29 | cjunks94/agentic-portfolio | 1 | 0 | 1 | 1 | $0.0067 |
-| #25 | cjunks94/agentic-portfolio | 0 | 0 | 0 | 0 | $0.0097 |
-| #56 | cjunks94/panoptrain | 1 | 0 | 1 | 2 | $0.0324 |
-| #121 | cjunks94/exportee-rails | 1 | 0 | 1 | 0 | $0.0099 |
-| #101 | cjunks94/exportee-rails | 1 | 0 | 1 | 2 | $0.0061 |
-| #28 | cjunks94/agentic-portfolio | 0 | 0 | 0 | 0 | $0.0033 |
-| #27 | cjunks94/agentic-portfolio | 0 | 0 | 0 | 0 | $0.0036 |
+| #29 | cjunks94/agentic-portfolio | 1 | 1 | 0 | 1 | $0.0076 |
+| #25 | cjunks94/agentic-portfolio | 0 | 0 | 0 | 0 | $0.0079 |
+| #56 | cjunks94/panoptrain | 1 | 0 | 1 | 1 | $0.0325 |
+| #121 | cjunks94/exportee-rails | 1 | 1 | 0 | 1 | $0.0107 |
+| #101 | cjunks94/exportee-rails | 1 | 0 | 1 | 2 | $0.0060 |
+| #28 | cjunks94/agentic-portfolio | 0 | 0 | 0 | 0 | $0.0037 |
+| #27 | cjunks94/agentic-portfolio | 0 | 0 | 0 | 0 | $0.0035 |
 | #59 | cjunks94/panoptrain | 1 | 0 | 1 | 2 | $0.0067 |
-| #54 | cjunks94/panoptrain | 0 | 0 | 0 | 0 | $0.0158 |
-| #117 | cjunks94/exportee-rails | 1 | 1 | 0 | 1 | $0.0078 |
-| #69 | cjunks94/resume-improvements | 0 | 0 | 0 | 0 | $0.0272 |
-| #64 | cjunks94/resume-improvements | 0 | 0 | 0 | 0 | $0.0022 |
+| #54 | cjunks94/panoptrain | 0 | 0 | 0 | 3 | $0.0149 |
+| #117 | cjunks94/exportee-rails | 1 | 1 | 0 | 1 | $0.0083 |
+| #69 | cjunks94/resume-improvements | 0 | 0 | 0 | 0 | $0.0269 |
+| #64 | cjunks94/resume-improvements | 0 | 0 | 0 | 0 | $0.0020 |
 | #57 | cjunks94/resume-improvements | 0 | 0 | 0 | 0 | $0.0023 |
-| #10 | cjunks94/hush-hush | 0 | 0 | 0 | 0 | $0.0048 |
-| #9 | cjunks94/hush-hush | 0 | 0 | 0 | 0 | $0.0016 |
+| #10 | cjunks94/hush-hush | 0 | 0 | 0 | 0 | $0.0049 |
+| #9 | cjunks94/hush-hush | 0 | 0 | 0 | 0 | $0.0018 |
 
 ## Detail
 
 ### #87 cjunks94/resume-improvements
 - MISS `particle-scene.js:65` [useful/defensive] isLightBg parses hex and rgb()/rgba() but not hsl()/hsla(); browsers may serialize --c-bg as hsl() so light-theme detection silently breaks
-- EXTRA `particle-scene.js:311` [useful/perf_concern] updateColors() reassigns all particle colors to random values from the palette on every theme change. If called frequently or with large PARTICLE_COUNT, consider whether randomizing is necessary versus reusing the original color assignments or cycling through a fixed sequence.
+- EXTRA `particle-scene.js:311` [useful/correctness] updateColors() re-randomizes particle colors on every call, losing the original color assignment from init(). If this is called during theme switches, particles will flicker to new random colors rather than remapping deterministically. Consider storing or seeding the random assignments to preserve visual continuity.
 
 ### #68 cjunks94/resume-improvements
-- EXTRA `.github/workflows/deploy.yml:87` [useful/logic_error] The condition `github.actor != 'dependabot[bot]'` gates the entire deploy-staging job, but line 31 allows Dependabot PRs to run tests. This creates asymmetry: Dependabot will run tests but then fail to deploy because it lacks ACTIONS_DEPLOY_KEY. Consider whether Dependabot PRs should be skipped at the test stage instead, or granted deploy access.
+- EXTRA `.github/workflows/deploy.yml:87` [useful/logic_precedence] The condition `github.actor != 'dependabot[bot]' && (...)` will skip Dependabot PRs from staging deployment, but line 31 now allows Dependabot PRs to run the test job. This creates inconsistency: Dependabot dependency bumps will be tested but never staged, preventing validation that the tested changes actually work in the staging environment.
 
 ### #29 cjunks94/agentic-portfolio
-- MISS `src/agentic_portfolio/web/api.py:589` [useful/security] _make_broker docstring documents demo_mode fail-safe contract but doesn't enforce it; future LiveBroker addition could bypass demo gate without a regression check
-- EXTRA `src/agentic_portfolio/web/views.py:493` [useful/missing_guard] The _demo_context function uses getattr with a default of True, but this masks cases where app.state.demo_mode exists but is unexpectedly None or falsy. Since the factory always sets it to a bool, consider asserting the type or documenting the assumption explicitly.
+- HIT `src/agentic_portfolio/web/api.py:589` [useful/contract_drift] The docstring for _make_broker explicitly states the contract for future LiveBroker addition—"when app.state.demo_mode is True (the default and fail-safe), this MUST return a paper broker"—but the function does not currently verify or enforce this constraint. If demo_mode is False, the function still returns PaperBroker, not raising an error or logging a warning, which leaves a latent correctness gap when LiveBroker is added.
+- EXTRA `src/agentic_portfolio/web/views.py:493` [useful/contract_drift] The docstring for _demo_context says it "Defaults to True if the attribute is missing, matching the factory's fail-safe contract," but this fallback is invisible to callers and would silently mask a missing app.state.demo_mode initialization during app construction. This hidden default could obscure setup errors; consider logging or asserting on missing demo_mode instead.
 
 ### #56 cjunks94/panoptrain
 - MISS `packages/client/src/lib/tafCurrentPeriod.ts:28` [useful/correctness] selection loop picks last in iteration order, not latest timeFrom — assumes upstream returns basePeriods sorted ascending
-- EXTRA `packages/client/src/components/Map/AirportPopup.tsx:1` [useful/import_statement_change] Added useState import alongside existing ReactNode type import. Verify that useState is used in this file and the import statement is necessary.
-- EXTRA `packages/server/src/services/taf-poller.ts:189` [useful/abort_signal_timeout] AbortSignal.timeout() was added in Node 17.3.0. Verify the project's minimum Node version supports this API; otherwise use a manual timeout via AbortController.
+- EXTRA `packages/client/src/components/Map/AirportPopup.tsx:367` [useful/type_annotation_drift] formatPeriodSummary's parameter type `ReturnType<typeof findCurrentTafPeriod> & object` constrains input to non-null but the function is only ever called with non-null values from line 299. The `& object` assertion suggests defensive programming for a potentially-null input, but the actual call site (line 299) guarantees `current` is non-null via `current ? ... : null` guard, making the type constraint misleading about actual call contexts.
 
 ### #121 cjunks94/exportee-rails
-- MISS `app/services/sources/salesforce_adapter.rb:45` [useful/perf] extract accumulates entire SOQL result in memory; a multi-million-row Account export would OOM the worker
+- HIT `app/services/sources/salesforce_adapter.rb:45` [useful/correctness] The extract method accumulates all rows into memory via `rows << normalize_record(record)` without pagination or streaming. For large result sets (millions of records), this will exhaust memory. Consider implementing cursor-based pagination or yielding records incrementally.
+- EXTRA `app/services/sources/salesforce_adapter.rb:74` [useful/contract_drift] The credentials method uses connection_config.fetch("credentials", config) but config is not defined in this method's scope. This falls back to the undefined local variable config instead of the instance method config, causing a potential NameError.
 
 ### #101 cjunks94/exportee-rails
 - MISS `app/controllers/api/v1/base_controller.rb:83` [useful/security] bad_request_with_message renders raw exception.message from ArgumentError; risks leaking internal context (CLAUDE.md: error messages must not leak internal details)
-- EXTRA `app/controllers/api/v1/base_controller.rb:61` [useful/null_safety] exception.record may be nil if ActiveRecord::RecordInvalid is raised outside a model context, causing a NoMethodError. Consider guarding with exception.record&.errors or rescuing the exception more narrowly.
-- EXTRA `spec/requests/api/v1/widgets_spec.rb:183` [useful/test_reliability] The test reloads existing_widget after deletion but does not verify that the database state persists. The discard_policy may be configured on the model; confirm the test actually validates persistence and not just in-memory state.
+- EXTRA `app/controllers/api/v1/base_controller.rb:61` [useful/null_guard] The unprocessable handler calls exception.record.errors.full_messages without guarding that exception.record exists. If a RecordInvalid is raised without a record, this will crash with NoMethodError.
+- EXTRA `app/controllers/api/v1/widgets_controller.rb:50` [useful/params_validation] The create_params permit :widget_type without validation. The spec documents enum values [rename, filter, mask_ssn, mask_email], but the controller does not validate against them; invalid types will be silently accepted.
 
 ### #59 cjunks94/panoptrain
 - MISS `packages/client/src/lib/scheduleIdle.ts:18` [useful/correctness] setTimeout fallback hardcodes 1ms and ignores the timeoutMs parameter; docstring promises 'soon-ish' upper bound but fallback fires next tick regardless of caller intent
-- EXTRA `packages/client/src/hooks/useTrainFeatures.ts:182` [useful/correctness] The empty-index guard checks `Object.keys(index).length === 0` but the index is only cleared synchronously in the routeShapes effect; if routeShapes changes while a slice is mid-execution, the index could be cleared and the check bypassed on the next slice iteration, potentially operating on a stale or partially-invalid index.
-- EXTRA `packages/client/src/hooks/useTrainFeatures.ts:244` [useful/correctness] Adding `shapeIndexVersion` to the dependency array will cause the effect to re-run and restart slice processing every time the deferred `buildShapeIndex` completes. This means ongoing slices for the previous data will be abandoned mid-computation, potentially discarding half-processed TrackPath results and restarting from index 0 on already-processed trains.
+- EXTRA `packages/client/src/hooks/useTrainFeatures.ts:182` [useful/logic_error] The check `Object.keys(index).length === 0` will always be true on first entry because line 101 synchronously sets `shapeIndexRef.current = {}`, then the idle callback runs later. This means the early return on line 182 will fire even when the index is being populated asynchronously, defeating the purpose of including `shapeIndexVersion` in the effect deps to re-run when the build completes.
+- EXTRA `packages/client/src/lib/scheduleIdle.ts:18` [useful/type_safety] Casting `setTimeout` result (which returns a NodeJS.Timeout or number depending on environment) to `number` via `as unknown as number` may cause issues if the handle is later passed to `clearTimeout` in a browser context where the type mismatch matters. Using a consistent numeric wrapper would be safer.
+
+### #54 cjunks94/panoptrain
+- EXTRA `packages/client/src/hooks/useRouteShapes.ts:24` [useful/logic_error] When mode === null (airspace view), the code returns early after clearing shapes/stops. However, the cache-hydration logic below this return may never execute for null mode. Verify that the early return on airspace view is intentional and doesn't skip necessary cleanup or state initialization.
+- EXTRA `packages/client/src/hooks/useTrainFeatures.ts:95` [useful/race_condition] The comment warns against resetting shapeIndexRef due to a race with the routes-build effect, but there is no synchronization guarantee that the build effect runs before the mode-reset effect. If mode and routeShapes change simultaneously, the build effect and this reset could still interleave unpredictably, potentially leaving the index wiped after a fresh build.
+- EXTRA `packages/client/src/lib/trackInterpolation.ts:113` [useful/correctness] shapeIdCounter is now globally unique across rebuilds, but it increments without bound. Over a long session with many mode switches, the counter could overflow Number.MAX_SAFE_INTEGER, creating collisions in the snap/bestShape caches. Consider resetting the counter or using a safer ID scheme (e.g., per-session UUID).
 
 ### #117 cjunks94/exportee-rails
-- HIT `app/services/transforms/data_frame_pipeline.rb:101` [useful/missing_guard] Widgets::Builtins.const_get may raise NameError if the widget class does not exist; this should be rescued and logged or allowed to bubble with context, not silently swallowed by filter_map.
-- EXTRA `app/services/transforms/data_frame_pipeline.rb:103` [useful/edge_case] filter_map silently drops rows that return nil or false; if a builtin widget's .call returns falsy, that row is removed entirely, which may not be the intended semantics for a data pipeline.
+- HIT `app/services/transforms/data_frame_pipeline.rb:101` [useful/error_handling] Line 101 calls `Widgets::Builtins.const_get(widget_name.camelize)` without error handling. If a widget is unknown, const_get raises NameError; this should be caught and handled gracefully rather than propagating as an unhandled exception.
+- EXTRA `app/services/transforms/data_frame_pipeline.rb:103` [useful/correctness] Line 103 uses `filter_map` which skips nil/falsy results from the builtin call. If a row-by-row transform intentionally returns nil or false for some rows (e.g., a filter widget), those rows are silently dropped. This differs from the non-fallback path and may cause data loss; the contract should be explicit about which widgets can drop rows.
