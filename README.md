@@ -14,7 +14,7 @@ It's also been an exercise in the engineering discipline this kind of project ac
 
 - Designed to **complement** CodeRabbit (which is well worth its ~$30/dev/mo on team plans), not replace it — the system prompt explicitly skips style/formatting and targets repo-context findings (contract drift, unenforced security gates, perf concerns tied to data shape)
 - Eval harness with committed `REPORT.md` history — the tuning loop is the artifact, not vibes
-- Anthropic Haiku 4.5 default; escalate to Sonnet 4.6 per repo
+- Anthropic Haiku 4.5 default; escalate to Sonnet 4.6 per repo, or per PR when it touches paths you name (`auth/**`, `migrations/**`)
 - One tool, two deployment shapes (Action or hosted GitHub App), shared core
 
 Cost is incidental, not the pitch — ~$0.007/PR on Haiku, ~$0.029 on Sonnet. The point is owning the pipeline.
@@ -243,6 +243,9 @@ model: claude-haiku-4-5           # or claude-sonnet-4-6
 review:
   severity_threshold: useful      # nit | useful | critical
   ignore_paths: ["vendor/**", "**/*.lock"]
+  escalate:                       # run the stronger model when a PR touches these
+    model: claude-sonnet-4-6
+    paths: ["auth/**", "migrations/**", "**/payments/**"]
   context_notes: |
     Language conventions:
       - GDScript: `class_name` is repo-globally resolved.
@@ -254,6 +257,8 @@ review:
 ```
 
 The `context_notes` field is the key per-repo lever. nitpick fetches `.nitpick.yaml` at the PR head SHA and injects `context_notes` into the reviewer's system prompt as a cached block — treat it as authoritative repo-specific guidance that overrides the bot's defaults. Use it for language conventions (GDScript `class_name`, Rails autoload, Python namespace packages), test-framework specifics, and patterns the team has explicitly opted out of having flagged.
+
+`escalate` is model routing. Sonnet's precision is about three times Haiku's at four times the cost per PR, which is the right trade on a migration or an auth change and the wrong one on a copy tweak. When any reviewed file matches one of the patterns, that PR runs on the escalation model; everything else stays on the default. Matching happens after `ignore_paths`, so an ignored file never escalates. The status comment names the model that ran, so you can see it happen. On `serve`, the rolling hourly spend ceiling bounds what a PR author can cost you by touching a matching path.
 
 For server-mode env vars (App ID, private key, webhook secret), see [`.env.example`](.env.example) and [`DEPLOY.md`](DEPLOY.md).
 
@@ -347,10 +352,9 @@ Point your GitHub App's webhook URL at the smee channel; open a PR; watch logs.
 Shipped:
 - v0.1.0 — Anthropic provider, eval harness, inline-comment posting verified
 - v0.2.0 — webhook server, GitHub App auth, Railway-ready
+- v0.3.x — multi-file context, `.nitpick.yaml`, `/nitpick` triggers, CodeRabbit interop, secret redaction, model routing (`review.escalate`)
 
-Next (v0.3.x+):
-- Model routing — auto-escalate Haiku → Sonnet when changed files match high-risk patterns (`auth/`, `migrations/`, `payments/`)
-- Multi-file context — fetch imports/callers of changed files to lift recall on the missed-by-everyone findings
+Next:
 - DeepSeek provider as a cost-optimization comparison point
 - Postgres-backed dedup if in-memory becomes lossy in practice
 

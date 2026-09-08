@@ -14,6 +14,7 @@ State snapshot at v0.2.0, plus the v0.3 work listed under "Shipped since this sn
 - **Prompt v2.8** (commit `6b93dbd`, same day) — same rules as v2.7, the four added sections compressed to a third of their length. Ablation on #101 (Sonnet, 5 runs per variant) showed the loss tracked *how much text* v2.2–v2.7 added, not any one rule: v2 4/5, v2.7 0/5, any single section removed 0–1/5, any pair removed 2/5, all four removed 3/5, v2.8 3/5. Gate: 3 Sonnet + 6 Haiku runs, see the results table. Sonnet (the production model) recovered #101 in 2 of 3 sweep runs. Haiku's recall dipped inside its own run-to-run range, and its v2.7 "hit" on resume-improvements #87 turned out to be a different complaint on the same regex line that the ±3-line matcher credited by coincidence — Haiku never found the labeled hsl() gap under either prompt.
 - **CodeRabbit interop** — reads CodeRabbit's existing comments on the PR and shows them to the model as covered ground, plus an opt-in wait so ordering is deterministic. Config lives under `review.coderabbit`.
 - **Security hardening + secret redaction** (see below). Several v0.4.x "operational hardening" items moved up because they turned out to be exploitable, not just untidy.
+- **Model routing** (the v0.3.0 item below — done, 2026-09-08). `review.escalate: {model, paths}` in `.nitpick.yaml`; any reviewed file matching a pattern runs the PR on the escalation model. Decision is `config.Config.ModelFor` (pure, tested), applied after `ignore_paths` on both `serve` and the CLI. `serve` builds escalation providers through `Handler.ProviderForModel` (a memoized `provider.New`); a bad model id logs and falls back to the default rather than skipping the review. Escalation is visible in the status comment via the provider name. Also closed GH-2 (listener had only `ReadHeaderTimeout`; now read/write/idle are set and asserted by a test).
 
 ### Security fixes worth not regressing
 
@@ -86,8 +87,8 @@ These are in the git log; don't re-do them.
 
 ## What's next
 
-### v0.3.0 — Model routing (highest leverage)
-Auto-escalate Haiku → Sonnet when `pull_request.changed_files` (or path match) hits `auth/**`, `migrations/**`, `payments/**`, `crypto/**`. Reuses existing infrastructure: just config + a path matcher. Same data we have already justifies it — Sonnet's 50% precision is what you want on a database migration; Haiku's broader coverage is fine for UI tweaks.
+### ~~v0.3.0 — Model routing~~ — shipped 2026-09-08, see "Shipped since this snapshot"
+Path-based `review.escalate`. Not done: escalation on PR *size* or on labels, and a per-installation default model. Both are small additions to `ModelFor` if wanted.
 
 ### v0.3.x — Multi-file context (recall ceiling)
 The Sonnet useful_recall plateau of 0.29 across all 3 runs suggests the same labeled findings get missed every time — they likely need cross-file context to spot. AsyncReview-inspired: before the LLM call, fetch the 2–3 files most referenced by the diff (imports, callers). Adds tokens (cost up) but should lift recall on the structurally-coupled findings.
