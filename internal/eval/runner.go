@@ -35,6 +35,12 @@ type ExpectedFinding struct {
 	Severity string `json:"severity"`
 	Category string `json:"category,omitempty"`
 	Note     string `json:"note,omitempty"`
+	// Keywords, when set, must appear (case-insensitively, any one of them)
+	// in a produced comment's body for it to count as a hit. File+line alone
+	// credited a different complaint on the same line once (resume-improvements
+	// #87), so labels name the one or two words the real finding cannot be
+	// stated without. Labels without keywords keep the file+line rule.
+	Keywords []string `json:"keywords,omitempty"`
 }
 
 type CaseResult struct {
@@ -108,7 +114,7 @@ func score(c Case, res provider.ReviewResult) CaseResult {
 			if matched[i] {
 				continue
 			}
-			if com.File == exp.File && abs(com.Line-exp.Line) <= 3 {
+			if matches(exp, com) {
 				cr.Hits = append(cr.Hits, com)
 				matched[i] = true
 				hit = true
@@ -172,6 +178,7 @@ func loadCases(path string) ([]Case, error) {
 
 func writeReport(w io.Writer, providerName string, results []CaseResult) error {
 	totalExpected, totalCritical, totalUseful := 0, 0, 0
+	totalKeyworded := 0
 	totalHits, totalCriticalHits, totalUsefulHits := 0, 0, 0
 	totalExtras := 0
 	totalCost := 0.0
@@ -179,6 +186,9 @@ func writeReport(w io.Writer, providerName string, results []CaseResult) error {
 	for _, r := range results {
 		for _, e := range r.Case.Expected {
 			totalExpected++
+			if len(e.Keywords) > 0 {
+				totalKeyworded++
+			}
 			switch e.Severity {
 			case "critical":
 				totalCritical++
@@ -210,6 +220,8 @@ func writeReport(w io.Writer, providerName string, results []CaseResult) error {
 	fmt.Fprintf(w, "# Eval report — `%s`\n\n", providerName)
 	fmt.Fprintf(w, "Cases: %d  ·  Expected findings: %d  ·  Produced: %d\n\n",
 		len(results), totalExpected, totalProduced)
+	fmt.Fprintf(w, "Matcher: file + line ±3, plus a label keyword in the body (%d of %d labels carry keywords)\n\n",
+		totalKeyworded, totalExpected)
 	fmt.Fprintln(w, "| Metric | Value |")
 	fmt.Fprintln(w, "|---|---|")
 	fmt.Fprintf(w, "| Precision | %.3f |\n", precision)
@@ -258,6 +270,24 @@ func writeReport(w io.Writer, providerName string, results []CaseResult) error {
 // oneLine flattens a finding body for a Markdown bullet.
 func oneLine(s string) string {
 	return strings.Join(strings.Fields(s), " ")
+}
+
+// matches is the hit rule: same file, line within ±3, and when the label
+// carries keywords, at least one of them in the body.
+func matches(exp ExpectedFinding, com provider.Comment) bool {
+	if com.File != exp.File || abs(com.Line-exp.Line) > 3 {
+		return false
+	}
+	if len(exp.Keywords) == 0 {
+		return true
+	}
+	body := strings.ToLower(com.Body)
+	for _, k := range exp.Keywords {
+		if k != "" && strings.Contains(body, strings.ToLower(k)) {
+			return true
+		}
+	}
+	return false
 }
 
 func abs(x int) int {
