@@ -1,0 +1,6 @@
+# Fingerprints gitleaks should skip. Format: <commit>:<path>:<rule>:<line>
+#
+# eval/cases/pr-10.diff is a frozen fixture (a real go.sum bump). The flagged
+# line is a modernc.org/sqlite module checksum, which trips generic-api-key on
+# entropy alone. Not a credential; keep the fixture byte-for-byte.
+8b438c80979bf92025318fca7ebab2653b710bd1:eval/cases/pr-10.diff:generic-api-key:66
