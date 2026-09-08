@@ -47,9 +47,12 @@ Severity is `critical` / `useful`. A case with no expected findings is also vali
 A produced comment matches an expected finding when:
 
 - `file` matches exactly, and
-- `line` is within ±3 of the expected line (small wiggle to absorb context-line attribution drift).
+- `line` is within ±3 of the expected line (small wiggle to absorb context-line attribution drift), and
+- when the label has `keywords`, at least one of them appears in the comment body (case-insensitive substring).
 
 Each expected finding can match at most one produced comment (greedy first-match). Unmatched expected = miss. Unmatched produced = extra (noise).
+
+The keyword rule exists because file+line alone once scored a different complaint on the same line as a hit (resume-improvements #87: Haiku flagged the regex for an unrelated reason and got credit for the missing `hsl()` branch). Keywords are the one or two words the real finding cannot be stated without; keep them short and few. A label without `keywords` keeps the file+line rule. REPORT.md prints which matcher produced its numbers, and reports before 2026-09-08 used file+line only, so treat recall across that boundary as not directly comparable.
 
 ## What REPORT.md shows
 
