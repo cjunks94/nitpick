@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"slices"
 	"sort"
 	"strings"
 
@@ -19,6 +20,9 @@ import (
 // reads top-to-bottom of the diff. Shared between the gh-subprocess path (used
 // by local `nitpick review`) and the HTTP path (used by `nitpick serve`).
 func BuildReviewBody(comments []provider.Comment) ([]byte, error) {
+	// Sort a copy: callers (eval scoring, the status comment) still hold the
+	// provider's slice and read it after this returns.
+	comments = slices.Clone(comments)
 	sort.SliceStable(comments, func(i, j int) bool {
 		if comments[i].File != comments[j].File {
 			return comments[i].File < comments[j].File
@@ -113,6 +117,9 @@ func PrintComments(w io.Writer, comments []provider.Comment, costUSD float64) er
 		fmt.Fprintf(w, "cost: $%.4f\n", costUSD)
 		return nil
 	}
+	// Sort a copy: callers (eval scoring, the status comment) still hold the
+	// provider's slice and read it after this returns.
+	comments = slices.Clone(comments)
 	sort.SliceStable(comments, func(i, j int) bool {
 		if comments[i].File != comments[j].File {
 			return comments[i].File < comments[j].File

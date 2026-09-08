@@ -2,6 +2,7 @@ package ghc
 
 import (
 	"encoding/json"
+	"io"
 	"strings"
 	"testing"
 
@@ -117,5 +118,31 @@ func TestBuildReviewBody_Structure(t *testing.T) {
 	c := comments[0].(map[string]any)
 	if c["path"] != "a.go" || c["side"] != "RIGHT" {
 		t.Errorf("comment payload missing required fields: %v", c)
+	}
+}
+
+// Both body builders sort by file then line. They must do so on a copy: the
+// caller keeps using the provider's slice after the call (the eval runner
+// scores it, --dry-run prints then returns it), and an in-place sort silently reorders
+// it under them.
+func TestBuildBodies_DoNotReorderCallerSlice(t *testing.T) {
+	in := []provider.Comment{
+		{File: "z.go", Line: 9, Body: "third"},
+		{File: "a.go", Line: 5, Body: "first"},
+		{File: "a.go", Line: 1, Body: "zeroth"},
+	}
+	snapshot := append([]provider.Comment(nil), in...)
+
+	if _, err := BuildReviewBody(in); err != nil {
+		t.Fatal(err)
+	}
+	if err := PrintComments(io.Discard, in, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	for i := range snapshot {
+		if in[i] != snapshot[i] {
+			t.Fatalf("caller slice reordered at %d: got %+v, want %+v", i, in[i], snapshot[i])
+		}
 	}
 }
