@@ -69,6 +69,15 @@ func ParseUnifiedDiff(raw []byte) ([]Hunk, error) {
 		newLine  int
 		oldLine  int
 		seenHunk bool
+		// oldLeft/newLeft count the lines the current hunk header promised.
+		// When both reach zero the hunk is complete and current is cleared,
+		// so a following "--- " or "+++ " is unambiguously a file header.
+		// Without this, a removed line whose content starts with "-- " (a
+		// deleted SQL/Lua/Haskell comment renders as "--- comment") was
+		// swallowed as the old-file header and OldLineNum/DiffPosition
+		// desynced for the rest of the hunk.
+		oldLeft int
+		newLeft int
 	)
 
 	flush := func() {
@@ -89,11 +98,18 @@ func ParseUnifiedDiff(raw []byte) ([]Hunk, error) {
 			currentFile = ""
 			position = 0
 			seenHunk = false
-		case strings.HasPrefix(line, "+++ b/"):
+		case seenHunk && strings.HasPrefix(line, `\`):
+			// "\ No newline at end of file" — counts toward position but has
+			// no content kind. Handled here rather than in the content switch
+			// because it can follow a hunk that was already flushed on
+			// exhaustion, and position must still advance for the next hunk
+			// in the same file.
+			position++
+		case current == nil && strings.HasPrefix(line, "+++ b/"):
 			currentFile = strings.TrimPrefix(line, "+++ b/")
-		case strings.HasPrefix(line, "+++ "):
+		case current == nil && strings.HasPrefix(line, "+++ "):
 			// /dev/null or other; ignore for file path
-		case strings.HasPrefix(line, "--- "):
+		case current == nil && strings.HasPrefix(line, "--- "):
 			// ignore old-file header
 		case strings.HasPrefix(line, "@@"):
 			flush()
@@ -117,6 +133,8 @@ func ParseUnifiedDiff(raw []byte) ([]Hunk, error) {
 			seenHunk = true
 			newLine = newStart
 			oldLine = oldStart
+			oldLeft = oldLines
+			newLeft = newLines
 			current = &Hunk{
 				File:     currentFile,
 				OldStart: oldStart,
@@ -135,6 +153,7 @@ func ParseUnifiedDiff(raw []byte) ([]Hunk, error) {
 					DiffPosition: position,
 				})
 				newLine++
+				newLeft--
 			case '-':
 				current.Lines = append(current.Lines, HunkLine{
 					Kind:         LineRemoved,
@@ -143,6 +162,7 @@ func ParseUnifiedDiff(raw []byte) ([]Hunk, error) {
 					DiffPosition: position,
 				})
 				oldLine++
+				oldLeft--
 			case ' ':
 				current.Lines = append(current.Lines, HunkLine{
 					Kind:         LineContext,
@@ -153,6 +173,8 @@ func ParseUnifiedDiff(raw []byte) ([]Hunk, error) {
 				})
 				newLine++
 				oldLine++
+				newLeft--
+				oldLeft--
 			case '\\':
 				// "\ No newline at end of file" — counts toward position but
 				// has no content kind.
@@ -167,6 +189,11 @@ func ParseUnifiedDiff(raw []byte) ([]Hunk, error) {
 				})
 				newLine++
 				oldLine++
+				newLeft--
+				oldLeft--
+			}
+			if oldLeft <= 0 && newLeft <= 0 {
+				flush()
 			}
 		case current != nil && line == "":
 			position++
@@ -179,6 +206,11 @@ func ParseUnifiedDiff(raw []byte) ([]Hunk, error) {
 			})
 			newLine++
 			oldLine++
+			newLeft--
+			oldLeft--
+			if oldLeft <= 0 && newLeft <= 0 {
+				flush()
+			}
 		}
 	}
 	flush()
