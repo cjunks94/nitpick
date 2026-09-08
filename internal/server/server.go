@@ -62,11 +62,7 @@ func Run(cfg Config) error {
 	if port == "" {
 		port = "8080"
 	}
-	srv := &http.Server{
-		Addr:              ":" + port,
-		Handler:           withRequestLogging(mux, logger),
-		ReadHeaderTimeout: 10 * time.Second,
-	}
+	srv := newHTTPServer(":"+port, withRequestLogging(mux, logger))
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
@@ -169,4 +165,30 @@ type statusWriter struct {
 func (w *statusWriter) WriteHeader(code int) {
 	w.status = code
 	w.ResponseWriter.WriteHeader(code)
+}
+
+// Connection timeouts for the single public ingress. GitHub delivers a
+// webhook in well under a second and the handler answers 202 in
+// milliseconds (the review runs detached), so these are generous for any
+// legitimate client while bounding what a slow-trickle attacker can hold
+// open. ReadHeaderTimeout alone left the body unbounded in time (GH-2):
+// the 5 MiB LimitReader caps size, not duration.
+const (
+	httpReadHeaderTimeout = 10 * time.Second
+	httpReadTimeout       = 30 * time.Second  // headers + body
+	httpWriteTimeout      = 30 * time.Second  // from end of request read
+	httpIdleTimeout       = 120 * time.Second // keep-alive connections between requests
+)
+
+// newHTTPServer builds the listener with every timeout set. Kept separate
+// from Run so a test can assert the timeouts without binding a port.
+func newHTTPServer(addr string, h http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           h,
+		ReadHeaderTimeout: httpReadHeaderTimeout,
+		ReadTimeout:       httpReadTimeout,
+		WriteTimeout:      httpWriteTimeout,
+		IdleTimeout:       httpIdleTimeout,
+	}
 }
