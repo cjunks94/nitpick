@@ -26,6 +26,9 @@ type ReviewConfig struct {
 	// CodeRabbit configures interop with CodeRabbit, which many repos run
 	// alongside nitpick. See CodeRabbitConfig.
 	CodeRabbit CodeRabbitConfig `yaml:"coderabbit"`
+	// Escalate routes PRs that touch high-risk paths to a stronger model.
+	// See EscalateConfig.
+	Escalate EscalateConfig `yaml:"escalate"`
 	// ContextNotes is free-form text injected into the reviewer's system
 	// prompt as a cached <repo-notes> block. Put repo-specific things the
 	// bot should know: language conventions (e.g. "GDScript class_name
@@ -62,7 +65,60 @@ func Parse(b []byte) (Config, error) {
 	if err := ValidatePatterns(cfg.Review.IgnorePaths); err != nil {
 		return Config{}, fmt.Errorf("parse .nitpick.yaml: review.ignore_paths: %w", err)
 	}
+	if err := cfg.Review.Escalate.validate(); err != nil {
+		return Config{}, fmt.Errorf("parse .nitpick.yaml: review.escalate: %w", err)
+	}
 	return cfg, nil
+}
+
+// EscalateConfig is model routing: when any reviewed file matches Paths, the
+// review runs on Model instead of the top-level default.
+//
+// The eval numbers motivate this. Sonnet's precision is roughly triple
+// Haiku's at four times the cost per PR; that trade is right on a database
+// migration or an auth change and wrong on a UI tweak. Routing on path lets
+// a repo pay for the stronger model only where a false negative is expensive.
+//
+// Matching runs after ignore_paths, so an ignored file never escalates. A PR
+// author can force the stronger model by touching a matching path; the cost
+// of that is bounded by the server's rolling spend ceiling, not by config.
+type EscalateConfig struct {
+	// Model is the model id to use when a path matches, e.g.
+	// "claude-sonnet-4-6". Must be one the provider supports.
+	Model string `yaml:"model"`
+	// Paths are doublestar patterns, same syntax as ignore_paths.
+	Paths []string `yaml:"paths"`
+}
+
+func (e EscalateConfig) validate() error {
+	switch {
+	case e.Model == "" && len(e.Paths) == 0:
+		return nil
+	case e.Model == "":
+		return fmt.Errorf("paths set but model is empty")
+	case len(e.Paths) == 0:
+		return fmt.Errorf("model %q set but paths is empty; nothing would ever escalate", e.Model)
+	}
+	if err := ValidatePatterns(e.Paths); err != nil {
+		return fmt.Errorf("paths: %w", err)
+	}
+	return nil
+}
+
+// ModelFor returns the model a review of the given file paths should run on.
+// matched is the first path that triggered escalation, empty when the default
+// model applies. Paths are expected to be the post-ignore_paths file list.
+func (c Config) ModelFor(files []string) (model, matched string) {
+	e := c.Review.Escalate
+	if e.Model == "" || len(e.Paths) == 0 {
+		return c.Model, ""
+	}
+	for _, f := range files {
+		if MatchAny(f, e.Paths) {
+			return e.Model, f
+		}
+	}
+	return c.Model, ""
 }
 
 // CodeRabbitConfig controls how nitpick behaves when CodeRabbit reviews the

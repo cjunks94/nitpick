@@ -188,12 +188,16 @@ const (
 // Handler owns the dependencies the webhook handler needs to do its work.
 // Constructed once at server startup and shared across requests.
 type Handler struct {
-	WebhookSecret  string
-	TokenSource    *ghapp.InstallationTokenSource
-	Provider       provider.Provider
-	MaxLinesPerPR  int      // skip PRs over this many added+deleted lines
-	SkipUserLogins []string // skip PRs from these users (e.g. "dependabot[bot]")
-	Logger         *slog.Logger
+	WebhookSecret string
+	TokenSource   *ghapp.InstallationTokenSource
+	Provider      provider.Provider
+	// ProviderForModel builds the provider for a repo's review.escalate
+	// model. Nil disables escalation (reviews log a warning and use
+	// Provider). Run wires MemoizedProviderFactory.
+	ProviderForModel ProviderFactory
+	MaxLinesPerPR    int      // skip PRs over this many added+deleted lines
+	SkipUserLogins   []string // skip PRs from these users (e.g. "dependabot[bot]")
+	Logger           *slog.Logger
 
 	// AllowUnauthenticatedTrigger disables the write-access check on the
 	// /nitpick command. Anyone can comment on a public repo's PR, so with
@@ -968,7 +972,11 @@ func (h *Handler) reviewPR(parent context.Context, log *slog.Logger, t reviewTar
 
 	priorFindings := fetchPriorFindings(ctx, log, client, repo, prNum, crCfg)
 
-	res, err := h.Provider.Review(ctx, provider.ReviewRequest{
+	// Model routing (review.escalate). Decided on the post-ignore_paths file
+	// list, so an ignored file never pulls in the expensive model.
+	reviewer := h.selectProvider(log, repoCfg, hunks)
+
+	res, err := reviewer.Review(ctx, provider.ReviewRequest{
 		Hunks:          hunks,
 		ContextFiles:   contextFiles,
 		RepoGuidelines: repoNotes,
@@ -987,7 +995,7 @@ func (h *Handler) reviewPR(parent context.Context, log *slog.Logger, t reviewTar
 		return
 	}
 	duration := time.Since(start)
-	statusBody := ghc.BuildStatusCommentBody(h.Provider.Name(), res.Comments, res.CostUSD, duration)
+	statusBody := ghc.BuildStatusCommentBody(reviewer.Name(), res.Comments, res.CostUSD, duration)
 
 	if len(res.Comments) == 0 {
 		if err := client.PostIssueComment(ctx, repo, prNum, statusBody); err != nil {

@@ -17,6 +17,21 @@ review:
     - security
     - perf
 
+  # Model routing. When any reviewed file matches one of these patterns the
+  # PR runs on `model` instead of the top-level default. Sonnet's precision
+  # is roughly triple Haiku's at four times the cost per PR: worth it on a
+  # migration or an auth change, not on a copy tweak.
+  #
+  # Matched after ignore_paths, so an ignored file never escalates. Both
+  # fields are required together; a half-configured block fails config load.
+  escalate:
+    model: claude-sonnet-4-6
+    paths:
+      - "auth/**"
+      - "migrations/**"
+      - "**/payments/**"
+      - "**/crypto/**"
+
   # CodeRabbit interop. nitpick is designed to run ALONGSIDE CodeRabbit, not
   # instead of it: CodeRabbit covers style, naming, and generic refactors;
   # nitpick targets contract drift, unenforced security gates, and perf issues

@@ -78,7 +78,14 @@ func Review(ctx context.Context, args []string) error {
 			redactedLines, redactedFiles)
 	}
 
-	p, err := provider.New(*providerName, cfg.Model)
+	// Model routing (review.escalate), decided on the post-ignore_paths file
+	// list exactly as the serve path does.
+	model := cfg.Model
+	if m, matched := cfg.ModelFor(diff.Files(hunks)); matched != "" {
+		fmt.Fprintf(os.Stderr, "nitpick: escalated to %s (matched review.escalate.paths on %s)\n", m, matched)
+		model = m
+	}
+	p, err := provider.New(*providerName, model)
 	if err != nil {
 		return err
 	}

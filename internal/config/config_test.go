@@ -216,3 +216,71 @@ func TestDuration_Unmarshal(t *testing.T) {
 		}
 	}
 }
+
+func TestParse_Escalate(t *testing.T) {
+	t.Run("absent means default model everywhere", func(t *testing.T) {
+		cfg, err := Parse([]byte("model: claude-haiku-4-5\n"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		m, hit := cfg.ModelFor([]string{"auth/login.go", "migrations/001.sql"})
+		if m != "claude-haiku-4-5" || hit != "" {
+			t.Fatalf("ModelFor = (%q, %q), want default with no match", m, hit)
+		}
+	})
+
+	t.Run("matching path escalates and reports the trigger", func(t *testing.T) {
+		cfg, err := Parse([]byte(`
+model: claude-haiku-4-5
+review:
+  escalate:
+    model: claude-sonnet-4-6
+    paths: ["auth/**", "migrations/**", "**/payments/**"]
+`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		cases := []struct {
+			files     []string
+			wantModel string
+			wantHit   string
+		}{
+			{[]string{"README.md", "web/app.js"}, "claude-haiku-4-5", ""},
+			{[]string{"README.md", "auth/session.go"}, "claude-sonnet-4-6", "auth/session.go"},
+			{[]string{"migrations/20260908_add_index.sql"}, "claude-sonnet-4-6", "migrations/20260908_add_index.sql"},
+			{[]string{"internal/payments/charge.go"}, "claude-sonnet-4-6", "internal/payments/charge.go"},
+			{[]string{"authors.txt"}, "claude-haiku-4-5", ""}, // prefix is not a directory match
+			{nil, "claude-haiku-4-5", ""},
+		}
+		for _, tc := range cases {
+			m, hit := cfg.ModelFor(tc.files)
+			if m != tc.wantModel || hit != tc.wantHit {
+				t.Errorf("ModelFor(%v) = (%q, %q), want (%q, %q)", tc.files, m, hit, tc.wantModel, tc.wantHit)
+			}
+		}
+	})
+
+	t.Run("escalate model empty when default is empty still returns empty", func(t *testing.T) {
+		// Provider treats "" as its own default; ModelFor must not invent one.
+		cfg, err := Parse([]byte("provider: anthropic\n"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if m, _ := cfg.ModelFor([]string{"x.go"}); m != "" {
+			t.Fatalf("ModelFor = %q, want empty (provider default)", m)
+		}
+	})
+
+	t.Run("half-configured blocks are rejected at parse time", func(t *testing.T) {
+		bad := map[string]string{
+			"paths without model": "review:\n  escalate:\n    paths: [\"auth/**\"]\n",
+			"model without paths": "review:\n  escalate:\n    model: claude-sonnet-4-6\n",
+			"invalid pattern":     "review:\n  escalate:\n    model: claude-sonnet-4-6\n    paths: [\"[\"]\n",
+		}
+		for name, src := range bad {
+			if _, err := Parse([]byte(src)); err == nil {
+				t.Errorf("%s: Parse accepted %q, want error", name, src)
+			}
+		}
+	})
+}

@@ -47,6 +47,7 @@ func Run(cfg Config) error {
 
 	tokenSource := ghapp.NewInstallationTokenSource(cfg.GitHubAppID, key)
 	handler := NewHandler(cfg.WebhookSecret, tokenSource, p, logger)
+	handler.ProviderForModel = MemoizedProviderFactory("anthropic")
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
