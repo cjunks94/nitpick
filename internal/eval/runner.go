@@ -229,7 +229,35 @@ func writeReport(w io.Writer, providerName string, results []CaseResult) error {
 			len(r.Case.Expected), len(r.Hits), len(r.Misses), len(r.Extras),
 			r.CostUSD)
 	}
+
+	// Per-finding detail. The counts above say a run regressed; this section
+	// says which labeled finding was lost and what the model said instead —
+	// the two things you need to diagnose a prompt change without re-running
+	// the sweep. Cases with nothing to show are omitted to keep the report
+	// readable.
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "## Detail")
+	for _, r := range results {
+		if len(r.Hits)+len(r.Misses)+len(r.Extras) == 0 {
+			continue
+		}
+		fmt.Fprintf(w, "\n### #%d %s\n", r.Case.PR, r.Case.Repo)
+		for _, h := range r.Hits {
+			fmt.Fprintf(w, "- HIT `%s:%d` [%s/%s] %s\n", h.File, h.Line, h.Severity, h.Category, oneLine(h.Body))
+		}
+		for _, m := range r.Misses {
+			fmt.Fprintf(w, "- MISS `%s:%d` [%s/%s] %s\n", m.File, m.Line, m.Severity, m.Category, oneLine(m.Note))
+		}
+		for _, e := range r.Extras {
+			fmt.Fprintf(w, "- EXTRA `%s:%d` [%s/%s] %s\n", e.File, e.Line, e.Severity, e.Category, oneLine(e.Body))
+		}
+	}
 	return nil
+}
+
+// oneLine flattens a finding body for a Markdown bullet.
+func oneLine(s string) string {
+	return strings.Join(strings.Fields(s), " ")
 }
 
 func abs(x int) int {
