@@ -69,10 +69,13 @@ Three-run mean per config against the 20 labeled PRs (Haiku v2 prompt; same prom
 | Sonnet 4.6 v2.7 (re-baseline 2026-09-02) | 5.3 | 0.39 | 0.19 | 0.29 | 0.61 | 0.26 | $0.019 |
 | Haiku v2.8 (6 runs, 2026-09-02) | 17.3 | 0.15 | 0.38 | 0.38 | 0.85 | 0.22 | $0.008 |
 | **Sonnet 4.6 v2.8** (3 runs, 2026-09-02) | 6.0 | 0.46 | 0.24 | 0.38 | 0.54 | 0.42 | $0.018 |
+| Haiku v2.8, keyword matcher (3 runs, 2026-09-08) | 14.3 | 0.14 | 0.29 | 0.29 | 0.86 | 0.18 | $0.008 |
 
 Sonnet has the highest F1 (precision-driven) at ~4× Haiku cost. Haiku has the highest useful_recall at $0.007/PR. Both beat the stub floor on F1 by a lot.
 
 v2.8 gate (2026-09-02): Sonnet F1 0.33 → 0.42 on recall(all), precision 0.39 → 0.46, noise 0.61 → 0.54, and the lost #101 finding is back. Haiku moved 0.27 → 0.22 on F1, driven by the #87 line-collision artifact described above; its six v2.8 runs span recall 0.29–0.43, which brackets the v2.7 mean. Shipped on the strength of the production model.
+
+Diff-parser gate (2026-09-08, PR #20, Haiku x3): recall 0.14 / 0.43 / 0.29, mean 0.29 against the v2.8 six-run mean of 0.38 (range 0.29-0.43). Two things make this not a regression signal for the parser change: the 20 fixtures parse byte-identically before and after (sha256 over the parsed hunks), so the model saw the same input; and these are the first runs under the keyword matcher, which rejected a same-line coincidence in run 2 (panoptrain #59: a type-cast complaint on the labeled line 18, not the ignored-timeoutMs bug) that the old matcher would have credited. Treat this row as the Haiku baseline under the new matcher, not as a comparison to the row above it.
 
 Two lessons worth keeping: (1) **prompt length is a tuning variable** — on a silence-first prompt every added prohibition costs recall, so compress before appending; (2) **the matcher is file+line only**, so a hit can be a different finding on the same line. `eval/REPORT.md` now has a Detail section (PR #14) listing the body of every hit; read it before trusting a recall number that moved by one finding.
 
