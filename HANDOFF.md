@@ -35,7 +35,7 @@ Each has a regression test:
 
 Still open from that review (low severity, documented not fixed):
 
-- `internal/diff/diff.go` swallows removed lines starting with `--` plus a space (a deleted SQL/Lua/Haskell comment renders as `--- comment` and matches the old-file-header case). `OldLineNum` and `DiffPosition` desync for the rest of that hunk. `NewLineNum` is unaffected, so posted anchors are still correct — but `DiffPosition` is kept precisely as the fallback path, and it's silently wrong on those diffs.
+- ~~`internal/diff/diff.go` swallows removed lines starting with `--` plus a space~~ — fixed 2026-09-08: hunks close when the header's line counts are exhausted, and `---`/`+++` are headers only between hunks. The 20 eval fixtures parse byte-identically before and after (sha256 of parsed hunks compared), so the Haiku gate for this change measures run-to-run variance only.
 
 ## What shipped
 
