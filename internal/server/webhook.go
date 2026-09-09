@@ -239,6 +239,14 @@ type Handler struct {
 	// reviews of the same PR.
 	TriggerCooldown time.Duration
 
+	// AttachContext fetches whole files referenced by the diff and puts them
+	// in the prompt. Off in the zero value and by default: with exactly
+	// this context attached, Sonnet hit 0 of 18 eval labels in three runs
+	// at 2.4x the cost, against 2 / 3 / 2 diff-only (HANDOFF.md,
+	// 2026-09-09). Opt-in through Config.AttachContext until the prompt's
+	// context handling is tuned; the eval measures it with --context.
+	AttachContext bool
+
 	// MaxSpendPerHourUSD is the rolling spend ceiling.
 	MaxSpendPerHourUSD float64
 
@@ -1100,7 +1108,12 @@ func (h *Handler) reviewPR(parent context.Context, log *slog.Logger, t reviewTar
 		return
 	}
 
-	contextFiles := fetchContextFiles(ctx, log, client, repo, headSHA, hunks)
+	var contextFiles []provider.ContextFile
+	if h.AttachContext {
+		contextFiles = fetchContextFiles(ctx, log, client, repo, headSHA, hunks)
+	} else {
+		log.Debug("context files off; diff-only review")
+	}
 
 	// CodeRabbit interop. The prompt has always instructed the model to skip
 	// "anything CodeRabbit would also flag", but until now that was a guess

@@ -256,7 +256,7 @@ The `context_notes` field is the key per-repo lever. nitpick injects it into the
 
 ### Environment variables
 
-`serve` reads `PORT`, `ANTHROPIC_API_KEY`, `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_WEBHOOK_SECRET`, and `NITPICK_MODEL` — see [`.env.example`](.env.example) and [`DEPLOY.md`](DEPLOY.md). `review` needs `ANTHROPIC_API_KEY` when `--provider anthropic`; `GITHUB_TOKEN` is consumed by the `gh` subprocess (required in a container or Action, optional on a machine where `gh auth login` has run).
+`serve` reads `PORT`, `ANTHROPIC_API_KEY`, `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_WEBHOOK_SECRET`, `NITPICK_MODEL`, and `NITPICK_CONTEXT_FILES` — see [`.env.example`](.env.example) and [`DEPLOY.md`](DEPLOY.md). `review` needs `ANTHROPIC_API_KEY` when `--provider anthropic`; `GITHUB_TOKEN` is consumed by the `gh` subprocess (required in a container or Action, optional on a machine where `gh auth login` has run).
 
 ### Running alongside CodeRabbit
 
@@ -332,7 +332,7 @@ Recognised: GitHub / Anthropic / OpenAI / AWS / Google / Slack / Stripe / SendGr
 
 Redaction is strictly line-for-line and never adds or removes a line — findings anchor on new-file line numbers, so anything that shifted them would move every comment below onto the wrong code. Detection is deliberately biased toward vendor-prefixed formats: a redactor that mangles ordinary code costs review quality on every PR, while a missed exotic secret costs nothing that wasn't already broken by committing it. Redaction counts are logged; values never are.
 
-**What the model sees, in numbers.** On `serve`, besides the diff: up to **5 whole files** referenced by the diff at the head SHA, skipping any file over **60 KiB** and stopping once **200 KiB** total is reached (change-weight-sorted, credentials files denied); `context_notes` up to 16 KiB as a cached system block; and up to 25 prior CodeRabbit comments at 1200 characters each in the user message. The `review` CLI sends the diff, `context_notes`, and prior comments but no whole-file context. These caps are the values that decide both what the model can find and what a PR costs.
+**What the model sees, in numbers.** On `serve`, besides the diff: `context_notes` up to 16 KiB as a cached system block, and up to 25 prior CodeRabbit comments at 1200 characters each in the user message. Whole-file context (up to **5 files** referenced by the diff at the head SHA, none over **60 KiB**, **200 KiB** total, change-weight-sorted, credentials files denied) is **off by default** and enabled with `NITPICK_CONTEXT_FILES=1`: measured on 2026-09-09 with the eval attaching exactly what `serve` sends, Sonnet hit 0 of 18 labels in three runs at 2.4x the cost, against 2 / 3 / 2 diff-only (see `HANDOFF.md`). The `review` CLI sends the diff, `context_notes`, and prior comments. These caps are the values that decide both what the model can find and what a PR costs.
 
 ### Cost controls
 

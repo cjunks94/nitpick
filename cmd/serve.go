@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/cjunks94/nitpick/internal/server"
 )
@@ -27,11 +28,22 @@ func Serve(_ context.Context, args []string) error {
 		GitHubPrivateKey: []byte(os.Getenv("GITHUB_APP_PRIVATE_KEY")),
 		WebhookSecret:    os.Getenv("GITHUB_WEBHOOK_SECRET"),
 		Model:            os.Getenv("NITPICK_MODEL"),
+		AttachContext:    envTrue("NITPICK_CONTEXT_FILES"),
 	}
 	if cfg.AnthropicAPIKey == "" {
 		return fmt.Errorf("ANTHROPIC_API_KEY is required")
 	}
 	return server.Run(cfg)
+}
+
+// envTrue reads a boolean env var: 1, true, yes (any case) are on; unset or
+// anything else is off, so the default is the cheap, measured behaviour.
+func envTrue(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {
+	case "1", "true", "yes":
+		return true
+	}
+	return false
 }
 
 func firstNonEmpty(a, b string) string {
