@@ -100,8 +100,17 @@ func Run(ctx context.Context, casesPath, outPath string, p provider.Provider, lo
 	if err != nil {
 		return err
 	}
-	defer out.Close()
-	return writeReport(out, p.Name(), results)
+	// REPORT.md is the committed measurement the prompt gate depends on; a
+	// silently truncated report is worse than a failed run, so both the
+	// buffered writes and the close are checked.
+	if err := writeReport(out, p.Name(), results); err != nil {
+		_ = out.Close()
+		return fmt.Errorf("write report: %w", err)
+	}
+	if err := out.Close(); err != nil {
+		return fmt.Errorf("close report: %w", err)
+	}
+	return nil
 }
 
 func score(c Case, res provider.ReviewResult) CaseResult {
@@ -158,7 +167,7 @@ func loadCases(path string) ([]Case, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	var out []Case
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 1<<20), 1<<20)
@@ -176,7 +185,11 @@ func loadCases(path string) ([]Case, error) {
 	return out, sc.Err()
 }
 
-func writeReport(w io.Writer, providerName string, results []CaseResult) error {
+func writeReport(out io.Writer, providerName string, results []CaseResult) error {
+	// Buffered so a short write anywhere surfaces once, from Flush; the
+	// per-line Fprintf errors are sticky on a bufio.Writer.
+	bw := bufio.NewWriter(out)
+	var w io.Writer = bw
 	totalExpected, totalCritical, totalUseful := 0, 0, 0
 	totalKeyworded := 0
 	totalHits, totalCriticalHits, totalUsefulHits := 0, 0, 0
@@ -264,7 +277,7 @@ func writeReport(w io.Writer, providerName string, results []CaseResult) error {
 			fmt.Fprintf(w, "- EXTRA `%s:%d` [%s/%s] %s\n", e.File, e.Line, e.Severity, e.Category, oneLine(e.Body))
 		}
 	}
-	return nil
+	return bw.Flush()
 }
 
 // oneLine flattens a finding body for a Markdown bullet.
