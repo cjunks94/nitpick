@@ -24,6 +24,9 @@ func minimalHandler(secret string) *Handler {
 		SkipUserLogins: []string{"dependabot[bot]"},
 		Logger:         silentLogger(),
 		seen:           make(map[string]time.Time),
+		// Off (negative), not unset (zero): zero now means the 60s default,
+		// and most tests here fire several triggers at the same PR.
+		TriggerCooldown: -1,
 	}
 }
 
@@ -304,12 +307,12 @@ func TestIssueComment_TriggerCooldown(t *testing.T) {
 	}
 }
 
-// A zero cooldown disables the gate — kept configurable for private repos
-// where every commenter is already trusted.
+// A negative cooldown disables the gate — kept configurable for private repos
+// where every commenter is already trusted. (Zero is the default, not off.)
 func TestIssueComment_CooldownDisabled(t *testing.T) {
 	secret := "topsecret"
 	h := minimalHandler(secret)
-	h.TriggerCooldown = 0
+	h.TriggerCooldown = -1
 
 	for i := 1; i <= 3; i++ {
 		payload := commentPayload("created", "/nitpick", "User", true)
@@ -367,12 +370,55 @@ func TestSpendCap(t *testing.T) {
 	}
 }
 
-func TestSpendCap_ZeroDisables(t *testing.T) {
+// Zero is the default ceiling, not "no ceiling". The old zero-disables shape
+// meant every struct-literal Handler ran with the cap off.
+func TestSpendCap_ZeroMeansDefault(t *testing.T) {
 	h := minimalHandler("s")
 	h.MaxSpendPerHourUSD = 0
+	h.recordSpend("owner/repo", defaultMaxSpendPerHourUSD)
+	if over, _ := h.overSpendCap(); !over {
+		t.Error("a zero cap should fall back to the default ceiling, not disable it")
+	}
+}
+
+func TestSpendCap_NegativeDisables(t *testing.T) {
+	h := minimalHandler("s")
+	h.MaxSpendPerHourUSD = -1
 	h.recordSpend("owner/repo", 9999)
 	if over, _ := h.overSpendCap(); over {
-		t.Error("a zero cap should disable the ceiling entirely")
+		t.Error("a negative cap should disable the ceiling entirely")
+	}
+}
+
+// Sibling of TestAuthGate_OnByDefaultForStructLiteral for the numeric knobs:
+// a bare Handler enforces the spend ceiling, the trigger cooldown, and the
+// size limit at their defaults.
+func TestZeroValueHandler_EnforcesCostControls(t *testing.T) {
+	h := &Handler{Logger: silentLogger()}
+	h.ensureInit() // shouldSkip below touches the dedup map
+
+	h.recordSpend("owner/repo", defaultMaxSpendPerHourUSD)
+	if over, _ := h.overSpendCap(); !over {
+		t.Error("zero-value Handler has the spend ceiling DISABLED")
+	}
+
+	if ok, _ := h.triggerCooledDown("owner/repo", 1); !ok {
+		t.Fatal("first trigger should pass")
+	}
+	if ok, _ := h.triggerCooledDown("owner/repo", 1); ok {
+		t.Error("zero-value Handler has the trigger cooldown DISABLED")
+	}
+
+	var pre pullRequestEvent
+	pre.Action = "opened"
+	pre.Installation.ID = 1
+	pre.PullRequest.Additions = defaultMaxLinesPerPR + 1
+	if skip, reason := h.shouldSkip(&pre); !skip || !strings.HasPrefix(reason, "size=") {
+		t.Errorf("zero-value Handler has the size limit DISABLED (skip=%v reason=%q)", skip, reason)
+	}
+	pre.PullRequest.Additions = defaultMaxLinesPerPR
+	if skip, reason := h.shouldSkip(&pre); skip && strings.HasPrefix(reason, "size=") {
+		t.Errorf("a PR at the default limit should not be skipped for size (%q)", reason)
 	}
 }
 
@@ -560,7 +606,7 @@ func TestReleaseTriggerCooldown(t *testing.T) {
 
 func TestReleaseTriggerCooldown_SafeWhenDisabledOrAbsent(t *testing.T) {
 	h := minimalHandler("s")
-	h.TriggerCooldown = 0
+	h.TriggerCooldown = -1
 	h.releaseTriggerCooldown("owner/repo", 1) // must not panic
 
 	h2 := minimalHandler("s")

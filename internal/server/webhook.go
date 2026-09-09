@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"path/filepath"
 	"regexp"
@@ -173,6 +174,10 @@ const (
 	// waiting for a slot before new work is shed. Without it, a burst just
 	// converts into unbounded memory plus a very expensive backlog.
 	defaultMaxQueuedReviews = 32
+	// defaultMaxLinesPerPR skips PRs whose added+deleted lines exceed it.
+	// Large PRs are expensive to review and rarely reviewable by a bot in
+	// one pass anyway.
+	defaultMaxLinesPerPR = 1000
 	// defaultTriggerCooldown is the minimum gap between two comment-triggered
 	// reviews of the same PR. Comment triggers intentionally bypass head-SHA
 	// dedup, so this is the only thing standing between "/nitpick" spam and a
@@ -196,9 +201,20 @@ type Handler struct {
 	// model. Nil disables escalation (reviews log a warning and use
 	// Provider). Run wires MemoizedProviderFactory.
 	ProviderForModel ProviderFactory
-	MaxLinesPerPR    int      // skip PRs over this many added+deleted lines
 	SkipUserLogins   []string // skip PRs from these users (e.g. "dependabot[bot]")
 	Logger           *slog.Logger
+
+	// Cost-control knobs. For each: zero means the default, a negative value
+	// disables the control, and the accessors (maxLines, cooldown, spendCap)
+	// are the only readers. Zero cannot mean "off": ensureInit only repairs
+	// unexported fields and the struct-literal construction path is
+	// supported, so a default-off numeric here is the same bug shape as a
+	// default-on bool (see AllowUnauthenticatedTrigger), and it shipped that
+	// way once — every struct-literal Handler ran with the spend ceiling and
+	// the trigger cooldown silently off.
+
+	// MaxLinesPerPR skips PRs over this many added+deleted lines.
+	MaxLinesPerPR int
 
 	// AllowUnauthenticatedTrigger disables the write-access check on the
 	// /nitpick command. Anyone can comment on a public repo's PR, so with
@@ -218,7 +234,7 @@ type Handler struct {
 	// reviews of the same PR.
 	TriggerCooldown time.Duration
 
-	// MaxSpendPerHourUSD is the rolling spend ceiling. Zero disables the cap.
+	// MaxSpendPerHourUSD is the rolling spend ceiling.
 	MaxSpendPerHourUSD float64
 
 	// dedupe prevents double-posting when GitHub redelivers a webhook or when
@@ -280,6 +296,38 @@ func (h *Handler) ensureInit() {
 	})
 }
 
+// maxLines, cooldown, and spendCap resolve the exported knobs: zero is the
+// default, negative disables (math.MaxInt lines, zero duration, zero cap).
+func (h *Handler) maxLines() int {
+	switch {
+	case h.MaxLinesPerPR < 0:
+		return math.MaxInt
+	case h.MaxLinesPerPR == 0:
+		return defaultMaxLinesPerPR
+	}
+	return h.MaxLinesPerPR
+}
+
+func (h *Handler) cooldown() time.Duration {
+	switch {
+	case h.TriggerCooldown < 0:
+		return 0
+	case h.TriggerCooldown == 0:
+		return defaultTriggerCooldown
+	}
+	return h.TriggerCooldown
+}
+
+func (h *Handler) spendCap() float64 {
+	switch {
+	case h.MaxSpendPerHourUSD < 0:
+		return 0
+	case h.MaxSpendPerHourUSD == 0:
+		return defaultMaxSpendPerHourUSD
+	}
+	return h.MaxSpendPerHourUSD
+}
+
 type spendEntry struct {
 	at   time.Time
 	usd  float64
@@ -292,7 +340,7 @@ func NewHandler(secret string, ts *ghapp.InstallationTokenSource, p provider.Pro
 		WebhookSecret:      secret,
 		TokenSource:        ts,
 		Provider:           p,
-		MaxLinesPerPR:      1000,
+		MaxLinesPerPR:      defaultMaxLinesPerPR,
 		SkipUserLogins:     []string{"dependabot[bot]", "renovate[bot]"},
 		Logger:             logger,
 		TriggerCooldown:    defaultTriggerCooldown,
@@ -410,17 +458,19 @@ func (h *Handler) spentLastHour() float64 {
 // immediately before the LLM call so the guard reflects spend that landed
 // while this review was queued.
 func (h *Handler) overSpendCap() (bool, float64) {
-	if h.MaxSpendPerHourUSD <= 0 {
+	cap := h.spendCap()
+	if cap <= 0 {
 		return false, 0
 	}
 	spent := h.spentLastHour()
-	return spent >= h.MaxSpendPerHourUSD, spent
+	return spent >= cap, spent
 }
 
 // triggerCooledDown reports whether enough time has passed since the last
 // comment-triggered review of this PR, recording the attempt when it has.
 func (h *Handler) triggerCooledDown(repo string, pr int) (bool, time.Duration) {
-	if h.TriggerCooldown <= 0 {
+	cd := h.cooldown()
+	if cd <= 0 {
 		return true, 0
 	}
 	h.ensureInit()
@@ -429,13 +479,13 @@ func (h *Handler) triggerCooledDown(repo string, pr int) (bool, time.Duration) {
 	defer h.cooldownMu.Unlock()
 	now := time.Now()
 	if last, ok := h.lastTrigger[key]; ok {
-		if remaining := h.TriggerCooldown - now.Sub(last); remaining > 0 {
+		if remaining := cd - now.Sub(last); remaining > 0 {
 			return false, remaining
 		}
 	}
 	h.lastTrigger[key] = now
 	for k, t := range h.lastTrigger {
-		if now.Sub(t) > 2*h.TriggerCooldown {
+		if now.Sub(t) > 2*cd {
 			delete(h.lastTrigger, k)
 		}
 	}
@@ -448,7 +498,7 @@ func (h *Handler) triggerCooledDown(repo string, pr int) (bool, time.Duration) {
 // check permissions with), so without this an unauthorized commenter could
 // deny a maintainer the /nitpick command for the whole cooldown window.
 func (h *Handler) releaseTriggerCooldown(repo string, pr int) {
-	if h.TriggerCooldown <= 0 {
+	if h.cooldown() <= 0 {
 		return
 	}
 	h.ensureInit()
@@ -789,8 +839,8 @@ func (h *Handler) handleCommentTriggerAsync(parent context.Context, log *slog.Lo
 		release()
 		return
 	}
-	if total := pr.Additions + pr.Deletions; total > h.MaxLinesPerPR {
-		log.Info("skip", "reason", fmt.Sprintf("size=%d>limit=%d", total, h.MaxLinesPerPR))
+	if total, limit := pr.Additions+pr.Deletions, h.maxLines(); total > limit {
+		log.Info("skip", "reason", fmt.Sprintf("size=%d>limit=%d", total, limit))
 		release()
 		return
 	}
@@ -827,8 +877,8 @@ func (h *Handler) shouldSkip(pre *pullRequestEvent) (bool, string) {
 		// Catches any other bot the user didn't enumerate.
 		return true, "user_type=Bot"
 	}
-	if total := pre.PullRequest.Additions + pre.PullRequest.Deletions; total > h.MaxLinesPerPR {
-		return true, fmt.Sprintf("size=%d>limit=%d", total, h.MaxLinesPerPR)
+	if total, limit := pre.PullRequest.Additions+pre.PullRequest.Deletions, h.maxLines(); total > limit {
+		return true, fmt.Sprintf("size=%d>limit=%d", total, limit)
 	}
 	if pre.Installation.ID == 0 {
 		return true, "no installation id (App not installed on this repo?)"
@@ -943,7 +993,7 @@ func (h *Handler) reviewPR(parent context.Context, log *slog.Logger, t reviewTar
 		log.Warn("review shed",
 			"reason", "hourly spend cap reached",
 			"spent_usd", fmt.Sprintf("%.4f", spent),
-			"cap_usd", fmt.Sprintf("%.2f", h.MaxSpendPerHourUSD))
+			"cap_usd", fmt.Sprintf("%.2f", h.spendCap()))
 		release()
 		return
 	}
