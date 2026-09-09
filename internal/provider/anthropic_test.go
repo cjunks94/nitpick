@@ -1,10 +1,21 @@
 package provider
 
 import (
+	"context"
+	"encoding/json"
+	"io"
+	"math"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
+	"github.com/anthropics/anthropic-sdk-go"
+	"github.com/anthropics/anthropic-sdk-go/option"
+
 	"github.com/cjunks94/nitpick/internal/diff"
+	"github.com/cjunks94/nitpick/internal/prompt"
 )
 
 // Real-world model outputs we lost eval runs to in early Sonnet sweeps.
@@ -333,5 +344,268 @@ func TestParseFindings_CandidateSelection(t *testing.T) {
 				t.Fatalf("got %d findings, want %d", len(got), tt.wantLen)
 			}
 		})
+	}
+}
+
+// messagesResponse renders a canned Messages API success body with the given
+// text content and usage buckets.
+func messagesResponse(text string, input, cacheWrite, cacheRead, output int) string {
+	body := map[string]any{
+		"id":            "msg_test",
+		"type":          "message",
+		"role":          "assistant",
+		"model":         "claude-haiku-4-5",
+		"content":       []map[string]any{{"type": "text", "text": text}},
+		"stop_reason":   "end_turn",
+		"stop_sequence": nil,
+		"usage": map[string]any{
+			"input_tokens":                input,
+			"cache_creation_input_tokens": cacheWrite,
+			"cache_read_input_tokens":     cacheRead,
+			"output_tokens":               output,
+		},
+	}
+	b, err := json.Marshal(body)
+	if err != nil {
+		panic(err)
+	}
+	return string(b)
+}
+
+// fakeMessages is an httptest stand-in for the Messages endpoint. It always
+// answers 200 (the SDK retries 5xx on its own, which a contract test must not
+// depend on) and keeps the last request body for inspection.
+type fakeMessages struct {
+	srv      *httptest.Server
+	mu       sync.Mutex
+	response string
+	lastBody []byte
+	hits     int
+}
+
+func newFakeMessages(t *testing.T, response string) *fakeMessages {
+	t.Helper()
+	f := &fakeMessages{response: response}
+	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/messages" {
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read request body: %v", err)
+		}
+		f.mu.Lock()
+		f.lastBody = body
+		f.hits++
+		resp := f.response
+		f.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, resp)
+	}))
+	t.Cleanup(f.srv.Close)
+	return f
+}
+
+func (f *fakeMessages) provider(model anthropic.Model) Anthropic {
+	return Anthropic{
+		client: anthropic.NewClient(
+			option.WithBaseURL(f.srv.URL),
+			option.WithAPIKey("test"),
+			option.WithHTTPClient(f.srv.Client()),
+			option.WithMaxRetries(0),
+		),
+		model: model,
+	}
+}
+
+// request decodes the last request body the fake received.
+func (f *fakeMessages) request(t *testing.T) map[string]any {
+	t.Helper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var m map[string]any
+	if err := json.Unmarshal(f.lastBody, &m); err != nil {
+		t.Fatalf("request body is not JSON: %v\n%s", err, f.lastBody)
+	}
+	return m
+}
+
+var contractHunk = diff.Hunk{
+	File: "a.go", NewStart: 1, NewLines: 1,
+	Lines: []diff.HunkLine{{Kind: diff.LineAdded, Content: "x := 1", NewLineNum: 1}},
+}
+
+// Row A: the four usage buckets are priced from priceTable with the 1h cache
+// multipliers. Hand-computed rather than delegated to cost() so a change to
+// the multipliers, or to which buckets count, fails here.
+func TestAnthropicReview_CostFromUsage(t *testing.T) {
+	findings := `{"findings":[{"file":"a.go","line":1,"severity":"useful","category":"x","body":"unused"}]}`
+	f := newFakeMessages(t, messagesResponse(findings, 1000, 2000, 3000, 500))
+	a := f.provider(anthropic.ModelClaudeHaiku4_5)
+
+	res, err := a.Review(context.Background(), ReviewRequest{Hunks: []diff.Hunk{contractHunk}})
+	if err != nil {
+		t.Fatalf("Review: %v", err)
+	}
+	if len(res.Comments) != 1 || res.Comments[0].File != "a.go" || res.Comments[0].Line != 1 {
+		t.Fatalf("comments = %+v, want the one canned finding", res.Comments)
+	}
+
+	p := priceTable[anthropic.ModelClaudeHaiku4_5]
+	want := (1000*p.input + 2000*p.input*2.0 + 3000*p.input*0.1 + 500*p.output) / 1_000_000
+	if math.Abs(res.CostUSD-want) > 1e-9 {
+		t.Errorf("CostUSD = %.9f, want %.9f", res.CostUSD, want)
+	}
+	// Sanity-check the arithmetic against the catalog numbers: Haiku is
+	// $1/M in, $5/M out -> (1000 + 4000 + 300 + 2500) / 1e6.
+	if math.Abs(res.CostUSD-0.0078) > 1e-9 {
+		t.Errorf("CostUSD = %.9f, want 0.0078 at Haiku list prices", res.CostUSD)
+	}
+	if res.Tokens.Input != 3000 || res.Tokens.Output != 500 || res.Tokens.CachedInput != 3000 {
+		t.Errorf("Tokens = %+v, want Input=3000 (input+cache write), Output=500, CachedInput=3000", res.Tokens)
+	}
+	if got := a.Name(); got != "anthropic-claude-haiku-4-5" {
+		t.Errorf("Name() = %q", got)
+	}
+}
+
+// Row B: a paid call whose text does not parse still reports its spend. The
+// server's rolling spend ceiling reads CostUSD off the result even on error;
+// returning zero here would let a provider stuck in parse failures bill
+// indefinitely while the guard read $0.00.
+func TestAnthropicReview_ReportsUsageOnParseError(t *testing.T) {
+	f := newFakeMessages(t, messagesResponse(`{"findings":[{"file":"a.go","line":}]}`, 1000, 0, 0, 100))
+	a := f.provider(anthropic.ModelClaudeHaiku4_5)
+
+	res, err := a.Review(context.Background(), ReviewRequest{Hunks: []diff.Hunk{contractHunk}})
+	if err == nil {
+		t.Fatalf("expected a parse error, got %+v", res)
+	}
+	if !strings.Contains(err.Error(), "parse findings") {
+		t.Errorf("err = %v, want a parse-findings error", err)
+	}
+	if res.CostUSD <= 0 {
+		t.Errorf("CostUSD = %v on parse error, want > 0 — the call was billed", res.CostUSD)
+	}
+	if res.Tokens.Input != 1000 || res.Tokens.Output != 100 {
+		t.Errorf("Tokens = %+v, want the billed usage", res.Tokens)
+	}
+	if len(res.Comments) != 0 {
+		t.Errorf("Comments = %+v, want none on parse error", res.Comments)
+	}
+}
+
+// Row C: the system prompt is sent as a 1h-TTL cached block, and repo notes
+// appear as a second system block only when set — never in the user turn.
+func TestAnthropicReview_RequestShape(t *testing.T) {
+	tests := []struct {
+		name       string
+		guidelines []byte
+		wantBlocks int
+	}{
+		{"no repo notes", nil, 1},
+		{"with repo notes", []byte("Don't flag null guards on load_hub_world."), 2},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFakeMessages(t, messagesResponse(`{"findings":[]}`, 10, 0, 0, 5))
+			a := f.provider(anthropic.ModelClaudeSonnet4_6)
+
+			_, err := a.Review(context.Background(), ReviewRequest{
+				Hunks:          []diff.Hunk{contractHunk},
+				RepoGuidelines: tt.guidelines,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := f.request(t)
+			if got := req["model"]; got != string(anthropic.ModelClaudeSonnet4_6) {
+				t.Errorf("model = %v, want %s", got, anthropic.ModelClaudeSonnet4_6)
+			}
+
+			system, ok := req["system"].([]any)
+			if !ok {
+				t.Fatalf("system is %T, want an array of blocks: %v", req["system"], req["system"])
+			}
+			if len(system) != tt.wantBlocks {
+				t.Fatalf("system has %d blocks, want %d: %v", len(system), tt.wantBlocks, system)
+			}
+			for i, raw := range system {
+				block, _ := raw.(map[string]any)
+				cc, _ := block["cache_control"].(map[string]any)
+				if cc["type"] != "ephemeral" || cc["ttl"] != "1h" {
+					t.Errorf("system[%d].cache_control = %v, want ephemeral/1h", i, block["cache_control"])
+				}
+			}
+			first, _ := system[0].(map[string]any)
+			if text, _ := first["text"].(string); text != prompt.For(string(anthropic.ModelClaudeSonnet4_6)) {
+				t.Errorf("system[0].text is not the system prompt for the model")
+			}
+			if tt.wantBlocks == 2 {
+				second, _ := system[1].(map[string]any)
+				text, _ := second["text"].(string)
+				if !strings.HasPrefix(text, "<repo-notes source=\".nitpick.yaml\">") ||
+					!strings.Contains(text, string(tt.guidelines)) ||
+					!strings.HasSuffix(text, "</repo-notes>") {
+					t.Errorf("system[1].text = %q, want the guidelines wrapped in <repo-notes>", text)
+				}
+			}
+
+			messages, _ := req["messages"].([]any)
+			if len(messages) != 1 {
+				t.Fatalf("messages = %v, want exactly one user turn", req["messages"])
+			}
+			user, _ := messages[0].(map[string]any)
+			if user["role"] != "user" {
+				t.Errorf("messages[0].role = %v, want user", user["role"])
+			}
+			userJSON, _ := json.Marshal(user)
+			if !strings.Contains(string(userJSON), "=== DIFF") || !strings.Contains(string(userJSON), "x := 1") {
+				t.Errorf("user turn does not carry the rendered diff: %s", userJSON)
+			}
+			if tt.guidelines != nil && strings.Contains(string(userJSON), string(tt.guidelines)) {
+				t.Errorf("repo notes leaked into the user turn: %s", userJSON)
+			}
+			if req["max_tokens"] != float64(4096) {
+				t.Errorf("max_tokens = %v, want 4096", req["max_tokens"])
+			}
+		})
+	}
+}
+
+// A prose-only reply is a silent review: no error, no findings, spend intact.
+func TestAnthropicReview_ProseIsSilent(t *testing.T) {
+	f := newFakeMessages(t, messagesResponse("Nothing worth flagging here.", 50, 0, 0, 10))
+	a := f.provider(anthropic.ModelClaudeHaiku4_5)
+
+	res, err := a.Review(context.Background(), ReviewRequest{Hunks: []diff.Hunk{contractHunk}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Comments) != 0 {
+		t.Errorf("Comments = %+v, want none", res.Comments)
+	}
+	if res.CostUSD <= 0 {
+		t.Errorf("CostUSD = %v, want > 0", res.CostUSD)
+	}
+}
+
+func TestNewAnthropic_ModelSelection(t *testing.T) {
+	a, err := NewAnthropic("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.model != anthropic.ModelClaudeHaiku4_5 {
+		t.Errorf("default model = %s, want Haiku", a.model)
+	}
+	a, err = NewAnthropic(string(anthropic.ModelClaudeSonnet4_6))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.model != anthropic.ModelClaudeSonnet4_6 {
+		t.Errorf("model = %s, want Sonnet", a.model)
+	}
+	if _, err := NewAnthropic("claude-unpriced-9"); err == nil || !strings.Contains(err.Error(), "priceTable") {
+		t.Errorf("unpriced model should be rejected with a priceTable hint, got %v", err)
 	}
 }
