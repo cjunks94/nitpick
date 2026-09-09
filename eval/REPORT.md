@@ -1,17 +1,17 @@
 # Eval report — `anthropic-claude-sonnet-4-6`
 
-Cases: 20  ·  Expected findings: 18  ·  Produced: 7
+Cases: 20  ·  Expected findings: 18  ·  Produced: 5
 
 Matcher: file + line ±3, plus a label keyword in the body (18 of 18 labels carry keywords)
 
 | Metric | Value |
 |---|---|
-| Precision | 0.286 |
-| Recall (all) | 0.111 |
+| Precision | 0.600 |
+| Recall (all) | 0.167 |
 | Recall (critical) | 0.000 |
-| Recall (useful) | 0.167 |
-| Noise rate | 0.714 |
-| Avg $/PR | $0.0183 |
+| Recall (useful) | 0.250 |
+| Noise rate | 0.400 |
+| Avg $/PR | $0.0182 |
 
 ## Per-case
 | PR | Repo | Expected | Hits | Misses | Extras | $ |
@@ -24,16 +24,16 @@ Matcher: file + line ±3, plus a label keyword in the body (18 of 18 labels carr
 | #29 | cjunks94/agentic-portfolio | 1 | 0 | 1 | 0 | $0.0152 |
 | #25 | cjunks94/agentic-portfolio | 1 | 0 | 1 | 0 | $0.0205 |
 | #56 | cjunks94/panoptrain | 3 | 0 | 3 | 0 | $0.0921 |
-| #121 | cjunks94/exportee-rails | 3 | 1 | 2 | 2 | $0.0307 |
-| #101 | cjunks94/exportee-rails | 2 | 1 | 1 | 0 | $0.0129 |
+| #121 | cjunks94/exportee-rails | 3 | 2 | 1 | 0 | $0.0297 |
+| #101 | cjunks94/exportee-rails | 2 | 1 | 1 | 0 | $0.0131 |
 | #28 | cjunks94/agentic-portfolio | 0 | 0 | 0 | 0 | $0.0047 |
 | #27 | cjunks94/agentic-portfolio | 0 | 0 | 0 | 0 | $0.0057 |
 | #59 | cjunks94/panoptrain | 2 | 0 | 2 | 0 | $0.0136 |
 | #54 | cjunks94/panoptrain | 2 | 0 | 2 | 0 | $0.0369 |
-| #117 | cjunks94/exportee-rails | 3 | 0 | 3 | 2 | $0.0210 |
+| #117 | cjunks94/exportee-rails | 3 | 0 | 3 | 1 | $0.0196 |
 | #69 | cjunks94/resume-improvements | 0 | 0 | 0 | 0 | $0.0777 |
 | #64 | cjunks94/resume-improvements | 0 | 0 | 0 | 0 | $0.0018 |
-| #57 | cjunks94/resume-improvements | 0 | 0 | 0 | 1 | $0.0038 |
+| #57 | cjunks94/resume-improvements | 0 | 0 | 0 | 1 | $0.0036 |
 | #10 | cjunks94/hush-hush | 0 | 0 | 0 | 0 | $0.0087 |
 | #9 | cjunks94/hush-hush | 0 | 0 | 0 | 0 | $0.0010 |
 
@@ -54,14 +54,12 @@ Matcher: file + line ±3, plus a label keyword in the body (18 of 18 labels carr
 - MISS `packages/server/src/services/taf-poller.ts:74` [useful/correctness] Number("") is 0 and passes isFinite, so upstream's empty-string visib (present on 5 overlay groups in the fixture) parses to 0 sm instead of the documented null; needs an explicit blank check before the numeric fallthrough
 
 ### #121 cjunks94/exportee-rails
-- HIT `app/services/sources/salesforce_adapter.rb:45` [useful/performance] The extract method accumulates all records into a Ruby Array before returning, which defeats Restforce's lazy enumeration and will OOM on large result sets. Since extract_streaming delegates to extract, streaming mode provides no benefit; consider yielding rows incrementally or at minimum documenting the size ceiling.
+- HIT `app/services/sources/salesforce_adapter.rb:45` [useful/performance] The `extract` method accumulates all records into a `rows` array before returning, which loads the full result set into memory. For large Salesforce orgs this can be hundreds of thousands of records; consider using `query_all` with lazy enumeration or yielding batches, since Restforce's `query` already paginates internally through its Enumerator.
+- HIT `app/services/sources/salesforce_adapter.rb:26` [useful/performance] `introspect_schema` issues one `client.describe(sobject["name"])` call per queryable object in a tight loop (N+1 HTTP calls). Salesforce orgs with many custom objects will make hundreds of sequential API requests; there is no batching or concurrency here and no note about this cost.
 - MISS `app/services/sources/salesforce_adapter.rb:66` [critical/correctness] explicit api_version: nil overrides Restforce's default in its options merge (concerns/base.rb merge!), so a connection that omits the documented-optional key hits /services/data/v/... and 404s on every call; specs stub Restforce.new so they can't see it
-- MISS `app/services/sources/salesforce_adapter.rb:27` [useful/perf] introspect_schema describes every queryable sobject in a sequential loop: hundreds of HTTP calls per introspection on a stock org, eating the daily API allocation; batch via composite describe or describe lazily
-- EXTRA `app/services/sources/salesforce_adapter.rb:23` [useful/performance] introspect_schema calls client.describe(sobject["name"]) serially for every queryable object; a large org with hundreds of objects will make hundreds of sequential HTTP calls. This N+1 pattern can be very slow and should at least be documented as a known limitation.
-- EXTRA `app/services/sources/salesforce_adapter.rb:74` [useful/correctness] When the connection_config has no "credentials" key, credentials falls back to config itself (the whole config hash), meaning credential lookups like credentials["username"] will return nil silently rather than raising an error. The fallback should probably raise a configuration error instead of masking the misconfiguration.
 
 ### #101 cjunks94/exportee-rails
-- HIT `app/controllers/api/v1/base_controller.rb:82` [useful/security] Passing raw exception.message to the API response for ArgumentError can leak internal implementation details or stack hints. Consider whitelisting a safe message or using a generic fallback when the exception originates from unexpected code paths.
+- HIT `app/controllers/api/v1/base_controller.rb:82` [useful/information-disclosure] bad_request_with_message renders exception.message directly as the API error body. ArgumentError messages from internal libraries may leak implementation details or stack context; prefer a safe allowlist or a generic fallback when the message isn't intentionally authored for public consumption.
 - MISS `app/controllers/api/v1/base_controller.rb:13` [useful/correctness] rescuing ArgumentError globally converts programmer errors (wrong arity, Integer('x'), Pagy overflow) into client-facing 400s and hides real bugs from error tracking; rescue the specific enum-assignment case instead
 
 ### #59 cjunks94/panoptrain
@@ -76,8 +74,7 @@ Matcher: file + line ±3, plus a label keyword in the body (18 of 18 labels carr
 - MISS `app/services/transforms/data_frame_pipeline.rb:100` [useful/security] const_get with widget_name from YAML config can resolve to unintended constants; safer to dispatch via an explicit widget→class hash
 - MISS `app/services/exports/executor.rb:25` [useful/correctness] Polars branch times widget transforms inside the write_ms block while legacy counts them in transform_ms, so the metrics the README advertises for A/B comparison are apples-to-oranges
 - MISS `app/services/transforms/data_frame_pipeline.rb:27` [critical/correctness] DataFrame.new(rows) infers dtypes from the first 100 rows (polars-df N_INFER_DEFAULT); a column that is nil or a different type in those rows and populated later raises a ComputeError and fails the run, order-dependent; pass infer_schema_length: nil or an explicit schema
-- EXTRA `app/services/transforms/data_frame_pipeline.rb:101` [critical/] Widgets::Builtins.const_get(widget_name.camelize) will raise NameError for any unknown widget name that doesn't correspond to a real constant, rather than falling back gracefully. There is no rescue around this call, so a pipeline with an unrecognized widget name will propagate an unhandled exception and abort the export run instead of silently skipping or falling back.
-- EXTRA `app/services/transforms/data_frame_pipeline.rb:31` [useful/] When mapping_fields contains a target column that doesn't exist in the DataFrame (e.g. because a prior select_columns widget dropped it), the select silently omits that column from output. This differs from the legacy row-by-row path and could produce CSVs missing expected header columns without any error or warning.
+- EXTRA `app/services/transforms/data_frame_pipeline.rb:101` [useful/correctness] If `widget_name.camelize` does not match a defined constant under `Widgets::Builtins`, `const_get` raises `NameError` instead of silently skipping or returning `df`. An unknown widget name that isn't handled by the `case` branches (including widget names with unexpected casing) will crash the pipeline rather than gracefully pass the data through.
 
 ### #57 cjunks94/resume-improvements
-- EXTRA `.github/workflows/canary-build.yml:23` [useful/nonexistent-action-version] actions/checkout@v6 does not exist; the latest stable release is v4. This will cause all jobs referencing it to fail at the checkout step.
+- EXTRA `.github/workflows/canary-build.yml:23` [critical/] actions/checkout@v6 does not exist; the latest major release is v4. This will cause all workflow jobs to fail at the checkout step.
