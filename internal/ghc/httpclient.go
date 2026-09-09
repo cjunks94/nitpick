@@ -1,12 +1,10 @@
 package ghc
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -60,6 +58,12 @@ type HTTPClient struct {
 	BaseURL    string // defaults to https://api.github.com
 	Token      string // installation token (Authorization: token <Token>)
 	HTTPClient *http.Client
+	// MaxAttempts bounds retries of transient failures (see do). Zero means
+	// the default of 3; tests that deliberately serve 5xx set 1.
+	MaxAttempts int
+	// RetryBackoff is the first backoff step; each retry waits 4x the last.
+	// Zero means the default of 500ms.
+	RetryBackoff time.Duration
 }
 
 // NewHTTPClient returns a client wired with reasonable defaults.
@@ -120,23 +124,13 @@ func (p PRDetails) HeadIsUntrusted() bool {
 // carry full PR data (issue_comment) — fetches the same fields the
 // pull_request webhook would have given us.
 func (c *HTTPClient) FetchPR(ctx context.Context, repo string, pr int) (PRDetails, error) {
-	url := fmt.Sprintf("%s/repos/%s/pulls/%d", c.BaseURL, repo, pr)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return PRDetails{}, err
-	}
-	req.Header.Set("Authorization", "token "+c.Token)
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-
-	resp, err := c.HTTPClient.Do(req)
+	u := fmt.Sprintf("%s/repos/%s/pulls/%d", c.BaseURL, repo, pr)
+	status, body, err := c.do(ctx, http.MethodGet, u, acceptJSON, nil, maxJSONBytes)
 	if err != nil {
 		return PRDetails{}, fmt.Errorf("fetch PR: %w", err)
 	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusOK {
-		return PRDetails{}, fmt.Errorf("fetch PR: HTTP %d: %s", resp.StatusCode, truncate(string(body), 300))
+	if status != http.StatusOK {
+		return PRDetails{}, fmt.Errorf("fetch PR: HTTP %d: %s", status, truncate(string(body), 300))
 	}
 
 	var raw struct {
@@ -206,34 +200,27 @@ func CanWrite(permission string) bool {
 // one of none | read | triage | write | admin. A 403/404 from this endpoint
 // means the installation can't see the collaborator list or the user isn't a
 // collaborator; both are reported as PermNone rather than an error so the
-// caller fails closed.
+// caller fails closed. A rate-limit 403 is different: GitHub did not answer
+// the question, so it is returned as an error wrapping ErrRateLimited rather
+// than read as "not a collaborator", which would burn the caller's cooldown
+// on a maintainer who does have access.
 func (c *HTTPClient) RepoPermission(ctx context.Context, repo, username string) (string, error) {
 	if username == "" {
 		return PermNone, nil
 	}
 	u := fmt.Sprintf("%s/repos/%s/collaborators/%s/permission",
 		c.BaseURL, repo, url.PathEscape(username))
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
-	if err != nil {
-		return PermNone, err
-	}
-	req.Header.Set("Authorization", "token "+c.Token)
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-
-	resp, err := c.HTTPClient.Do(req)
+	status, body, err := c.do(ctx, http.MethodGet, u, acceptJSON, nil, maxJSONBytes)
 	if err != nil {
 		return PermNone, fmt.Errorf("fetch repo permission: %w", err)
 	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusForbidden {
+	if status == http.StatusNotFound || status == http.StatusForbidden {
 		// Not a collaborator, or the App lacks the metadata scope. Fail closed.
 		return PermNone, nil
 	}
-	if resp.StatusCode != http.StatusOK {
+	if status != http.StatusOK {
 		return PermNone, fmt.Errorf("fetch repo permission: HTTP %d: %s",
-			resp.StatusCode, truncate(string(body), 300))
+			status, truncate(string(body), 300))
 	}
 	var raw struct {
 		Permission string `json:"permission"`
@@ -262,25 +249,15 @@ func (c *HTTPClient) FetchFile(ctx context.Context, repo, sha, path string) ([]b
 	// or "&" surviving inside a segment can't graft extra parameters on.
 	u := fmt.Sprintf("%s/repos/%s/contents/%s?%s",
 		c.BaseURL, repo, escaped, url.Values{"ref": {sha}}.Encode())
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Authorization", "token "+c.Token)
-	req.Header.Set("Accept", "application/vnd.github.raw+json")
-	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-
-	resp, err := c.HTTPClient.Do(req)
+	status, body, err := c.do(ctx, http.MethodGet, u, acceptRaw, nil, maxFileBytes)
 	if err != nil {
 		return nil, fmt.Errorf("fetch file %s: %w", path, err)
 	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode == http.StatusNotFound {
+	if status == http.StatusNotFound {
 		return nil, fmt.Errorf("file %s not found at %s: %w", path, sha, ErrFileNotFound)
 	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("fetch file %s: HTTP %d: %s", path, resp.StatusCode, truncate(string(body), 300))
+	if status != http.StatusOK {
+		return nil, fmt.Errorf("fetch file %s: HTTP %d: %s", path, status, truncate(string(body), 300))
 	}
 	return body, nil
 }
@@ -329,26 +306,13 @@ func (c *HTTPClient) listComments(ctx context.Context, endpoint string) ([]Exist
 			"per_page": {fmt.Sprintf("%d", perPage)},
 			"page":     {fmt.Sprintf("%d", page)},
 		}.Encode())
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
-		if err != nil {
-			return nil, false, err
-		}
-		req.Header.Set("Authorization", "token "+c.Token)
-		req.Header.Set("Accept", "application/vnd.github+json")
-		req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-
-		resp, err := c.HTTPClient.Do(req)
+		status, body, err := c.do(ctx, http.MethodGet, u, acceptJSON, nil, maxJSONBytes)
 		if err != nil {
 			return nil, false, fmt.Errorf("list comments: %w", err)
 		}
-		body, readErr := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if readErr != nil {
-			return nil, false, fmt.Errorf("list comments: %w", readErr)
-		}
-		if resp.StatusCode != http.StatusOK {
+		if status != http.StatusOK {
 			return nil, false, fmt.Errorf("list comments: HTTP %d: %s",
-				resp.StatusCode, truncate(string(body), 300))
+				status, truncate(string(body), 300))
 		}
 
 		var raw []struct {
@@ -407,23 +371,13 @@ func FilterByAuthor(comments []ExistingComment, logins []string) []ExistingComme
 // to `gh pr diff <n>` but uses the installation token. The media type header
 // is what makes GitHub return raw diff text rather than the JSON resource.
 func (c *HTTPClient) FetchDiff(ctx context.Context, repo string, pr int) ([]byte, error) {
-	url := fmt.Sprintf("%s/repos/%s/pulls/%d", c.BaseURL, repo, pr)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Authorization", "token "+c.Token)
-	req.Header.Set("Accept", "application/vnd.github.diff")
-	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-
-	resp, err := c.HTTPClient.Do(req)
+	u := fmt.Sprintf("%s/repos/%s/pulls/%d", c.BaseURL, repo, pr)
+	status, body, err := c.do(ctx, http.MethodGet, u, acceptDiff, nil, maxDiffBytes)
 	if err != nil {
 		return nil, fmt.Errorf("fetch diff: %w", err)
 	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("fetch diff: HTTP %d: %s", resp.StatusCode, truncate(string(body), 500))
+	if status != http.StatusOK {
+		return nil, fmt.Errorf("fetch diff: HTTP %d: %s", status, truncate(string(body), 500))
 	}
 	return body, nil
 }
@@ -440,24 +394,13 @@ func (c *HTTPClient) PostReview(ctx context.Context, repo string, pr int, commen
 	if err != nil {
 		return err
 	}
-	url := fmt.Sprintf("%s/repos/%s/pulls/%d/reviews", c.BaseURL, repo, pr)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Authorization", "token "+c.Token)
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.HTTPClient.Do(req)
+	u := fmt.Sprintf("%s/repos/%s/pulls/%d/reviews", c.BaseURL, repo, pr)
+	status, respBody, err := c.do(ctx, http.MethodPost, u, acceptJSON, body, maxJSONBytes)
 	if err != nil {
 		return fmt.Errorf("post review: %w", err)
 	}
-	defer resp.Body.Close()
-	respBody, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("post review: HTTP %d: %s", resp.StatusCode, truncate(string(respBody), 500))
+	if status < 200 || status >= 300 {
+		return fmt.Errorf("post review: HTTP %d: %s", status, truncate(string(respBody), 500))
 	}
 	return nil
 }

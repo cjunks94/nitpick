@@ -60,7 +60,9 @@ func comment(author, path string, line int, body string, created time.Time) map[
 }
 
 func clientFor(srv *httptest.Server) *ghc.HTTPClient {
-	return &ghc.HTTPClient{BaseURL: srv.URL, Token: "t", HTTPClient: srv.Client()}
+	// MaxAttempts 1: several tests here serve 5xx on purpose and must not
+	// sit through the client's retry backoff.
+	return &ghc.HTTPClient{BaseURL: srv.URL, Token: "t", HTTPClient: srv.Client(), MaxAttempts: 1}
 }
 
 func TestFetchPriorFindings_SelectsCodeRabbitOnly(t *testing.T) {

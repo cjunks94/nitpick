@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"os/exec"
 	"strings"
@@ -69,24 +68,13 @@ func (c *HTTPClient) PostIssueComment(ctx context.Context, repo string, pr int, 
 	if err != nil {
 		return err
 	}
-	url := fmt.Sprintf("%s/repos/%s/issues/%d/comments", c.BaseURL, repo, pr)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Authorization", "token "+c.Token)
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.HTTPClient.Do(req)
+	u := fmt.Sprintf("%s/repos/%s/issues/%d/comments", c.BaseURL, repo, pr)
+	status, respBody, err := c.do(ctx, http.MethodPost, u, acceptJSON, payload, maxJSONBytes)
 	if err != nil {
 		return fmt.Errorf("post status comment: %w", err)
 	}
-	defer resp.Body.Close()
-	respBody, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("post status comment: HTTP %d: %s", resp.StatusCode, truncate(string(respBody), 500))
+	if status < 200 || status >= 300 {
+		return fmt.Errorf("post status comment: HTTP %d: %s", status, truncate(string(respBody), 500))
 	}
 	return nil
 }
