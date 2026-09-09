@@ -102,3 +102,16 @@ func TestLoadContext_RejectsTraversal(t *testing.T) {
 		t.Error("a traversal path must not be read")
 	}
 }
+
+func TestSafeJoin(t *testing.T) {
+	dir := t.TempDir()
+	for _, bad := range []string{"", "../x", "a/../../x", "/etc/passwd", "C:/x"} {
+		if _, err := safeJoin(dir, bad); err == nil {
+			t.Errorf("safeJoin(%q) accepted a path that escapes the directory", bad)
+		}
+	}
+	got, err := safeJoin(dir, "src/app.go")
+	if err != nil || !strings.HasPrefix(got, dir) {
+		t.Errorf("safeJoin(src/app.go) = %q, %v", got, err)
+	}
+}

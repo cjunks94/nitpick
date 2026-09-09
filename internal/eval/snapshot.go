@@ -69,7 +69,11 @@ func Snapshot(ctx context.Context, casesPath string, w io.Writer) error {
 			// from other repositories and are committed here, so a key
 			// hardcoded in ordinary source must not enter this repo's history.
 			content, _ = secrets.RedactBytes(content)
-			dest := filepath.Join(dir, filepath.FromSlash(p))
+			dest, err := safeJoin(dir, p)
+			if err != nil {
+				skipped++
+				continue
+			}
 			if err := os.MkdirAll(filepath.Dir(dest), 0o750); err != nil {
 				return err
 			}
@@ -89,11 +93,38 @@ func Snapshot(ctx context.Context, casesPath string, w io.Writer) error {
 // which is also what serve does for a file absent at head.
 func loadContext(dir string) func(path string) ([]byte, error) {
 	return func(p string) ([]byte, error) {
-		if strings.Contains(p, "..") {
-			return nil, errors.New("unsafe path")
+		dest, err := safeJoin(dir, p)
+		if err != nil {
+			return nil, err
 		}
-		return os.ReadFile(filepath.Join(dir, filepath.FromSlash(p))) // #nosec G304 -- paths come from the committed diff fixture
+		return os.ReadFile(dest) // #nosec G304 -- confined to dir by safeJoin
 	}
+}
+
+// safeJoin resolves a repo-relative path from a diff under dir and refuses
+// anything that would land outside it: absolute paths, "..", and any
+// cleaned result that does not stay below dir. Diff paths are authored by
+// whoever opened the PR, so they are treated as hostile even though the
+// fixtures are committed.
+func safeJoin(dir, p string) (string, error) {
+	if p == "" || filepath.IsAbs(p) || strings.HasPrefix(p, "/") {
+		return "", errors.New("unsafe path")
+	}
+	for _, seg := range strings.Split(p, "/") {
+		if seg == ".." {
+			return "", errors.New("unsafe path")
+		}
+	}
+	base, err := filepath.Abs(dir)
+	if err != nil {
+		return "", err
+	}
+	dest := filepath.Join(base, filepath.FromSlash(p))
+	rel, err := filepath.Rel(base, dest)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", errors.New("unsafe path")
+	}
+	return dest, nil
 }
 
 func headSHA(ctx context.Context, repo string, pr int) (string, error) {
