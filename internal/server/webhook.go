@@ -125,10 +125,11 @@ type installation struct {
 	ID int64 `json:"id"`
 }
 
-// recoverPanic is a goroutine guard. A panic inside an async review or
-// comment-trigger handler shouldn't crash the whole server — log + move on.
-// Doubles as test resilience: tests that exercise the routing logic don't
-// need a real TokenSource/Provider just to verify the synchronous parts.
+// recoverPanic is the goroutine guard installed by goReview. A panic inside
+// an async review or comment-trigger handler shouldn't crash the whole
+// server — log + move on. Doubles as test resilience: tests that exercise
+// the routing logic don't need a real TokenSource/Provider just to verify
+// the synchronous parts.
 func recoverPanic(log *slog.Logger, where string) {
 	if r := recover(); r != nil {
 		log.Error("panic in "+where, "recover", fmt.Sprintf("%v", r))
@@ -332,10 +333,11 @@ func (h *Handler) Drain(timeout time.Duration) bool {
 	}
 }
 
-// goReview starts a review goroutine under the handler's drain tracking and
-// concurrency cap. Returns false if the work was shed because the queue is
-// already full — the caller has typically already written its HTTP response,
-// so shedding is logged rather than surfaced.
+// goReview starts a review goroutine under the handler's drain tracking,
+// concurrency cap, and panic guard. Returns false if the work was shed because
+// the queue is already full — the caller has typically already written its
+// HTTP response, so shedding is logged rather than surfaced, and the caller
+// must give back any dedup or cooldown claim it made for this work.
 func (h *Handler) goReview(log *slog.Logger, fn func(context.Context)) bool {
 	h.ensureInit()
 	h.queuedMu.Lock()
@@ -355,6 +357,10 @@ func (h *Handler) goReview(log *slog.Logger, fn func(context.Context)) bool {
 			h.queued--
 			h.queuedMu.Unlock()
 		}()
+		// Owned here rather than in each callback so that every async path
+		// registered through goReview is guarded, not just the ones that
+		// remembered to add their own defer.
+		defer recoverPanic(log, "review goroutine")
 
 		// Wait for a concurrency slot, but abandon if shutdown beats us to it.
 		select {
@@ -520,6 +526,15 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Dedup by repo|pr|sha — prevents double-post on webhook redelivery. The
+	// claim is released if the review is shed or fails before the provider.
+	release, ok := h.claimDedup(dedupKey(pre.Repository.FullName, pre.PullRequest.Number, pre.PullRequest.Head.SHA))
+	if !ok {
+		log.Info("skip", "reason", "duplicate (already reviewed this head_sha within the hour)")
+		w.WriteHeader(http.StatusAccepted)
+		return
+	}
+
 	// Return fast — review runs async under the handler's drain tracking and
 	// concurrency cap. The goroutine gets h.baseCtx, not the request context
 	// (which is cancelled the moment the HTTP response is written).
@@ -540,8 +555,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			HeadRepo: pre.PullRequest.Head.Repo.FullName,
 			BaseRepo: pre.Repository.FullName,
 		}.HeadIsUntrusted(),
+		release: release,
 	}
-	h.goReview(log, func(ctx context.Context) { h.reviewPR(ctx, log, target) })
+	if !h.goReview(log, func(ctx context.Context) { h.reviewPR(ctx, log, target) }) {
+		log.Info("released dedup claim", "reason", "queue full")
+		release()
+	}
 }
 
 // handleIssueComment routes top-level PR comments (issue_comment in GitHub's
@@ -680,9 +699,14 @@ func (h *Handler) dispatchCommentTrigger(w http.ResponseWriter, log *slog.Logger
 	w.WriteHeader(http.StatusAccepted)
 	_, _ = w.Write([]byte(`{"ok":true,"async":true,"trigger":"` + t.Source + `"}`))
 
-	h.goReview(log, func(ctx context.Context) {
+	if !h.goReview(log, func(ctx context.Context) {
 		h.handleCommentTriggerAsync(ctx, log, t.Repo, t.PRNum, t.InstallID, t.User.Login)
-	})
+	}) {
+		// The cooldown slot was claimed above; a shed trigger must not lock
+		// the commenter out for the whole window.
+		log.Info("released trigger cooldown", "reason", "queue full")
+		h.releaseTriggerCooldown(t.Repo, t.PRNum)
+	}
 }
 
 // handleCommentTriggerAsync is the goroutine body for comment-triggered
@@ -690,7 +714,10 @@ func (h *Handler) dispatchCommentTrigger(w http.ResponseWriter, log *slog.Logger
 // comment payload doesn't include the head SHA), runs the same skip rules
 // minus dedup, then dispatches reviewPR.
 func (h *Handler) handleCommentTriggerAsync(parent context.Context, log *slog.Logger, repo string, prNum int, installID int64, commenter string) {
-	defer recoverPanic(log, "comment-trigger goroutine")
+	// Every exit before reviewPR hands off to the provider gives the cooldown
+	// slot back: it was claimed synchronously in dispatchCommentTrigger, and a
+	// trigger that never produced a review must not cost the user the window.
+	release := func() { h.releaseTriggerCooldown(repo, prNum) }
 
 	// Bounds only this function's own GitHub calls. reviewPR is handed the
 	// unbounded parent instead, because it manages its own phase budgets and
@@ -701,6 +728,7 @@ func (h *Handler) handleCommentTriggerAsync(parent context.Context, log *slog.Lo
 	token, err := h.TokenSource.Token(ctx, installID)
 	if err != nil {
 		log.Error("mint installation token (comment trigger)", "err", err)
+		release()
 		return
 	}
 	client := ghc.NewHTTPClient(token)
@@ -716,7 +744,7 @@ func (h *Handler) handleCommentTriggerAsync(parent context.Context, log *slog.Lo
 		perm, err := client.RepoPermission(ctx, repo, commenter)
 		if err != nil {
 			log.Error("check commenter permission; refusing trigger", "err", err)
-			h.releaseTriggerCooldown(repo, prNum)
+			release()
 			return
 		}
 		if !ghc.CanWrite(perm) {
@@ -726,7 +754,7 @@ func (h *Handler) handleCommentTriggerAsync(parent context.Context, log *slog.Lo
 			// permissions with), so leaving it consumed would let any
 			// unauthorized commenter lock a maintainer out of /nitpick for the
 			// cooldown window just by typing it first.
-			h.releaseTriggerCooldown(repo, prNum)
+			release()
 			return
 		}
 		log.Debug("commenter authorized", "permission", perm)
@@ -735,6 +763,7 @@ func (h *Handler) handleCommentTriggerAsync(parent context.Context, log *slog.Lo
 	pr, err := client.FetchPR(ctx, repo, prNum)
 	if err != nil {
 		log.Error("fetch PR for comment trigger", "err", err)
+		release()
 		return
 	}
 	log = log.With("head_sha", pr.HeadSHA)
@@ -745,20 +774,24 @@ func (h *Handler) handleCommentTriggerAsync(parent context.Context, log *slog.Lo
 	// the user is asking explicitly.
 	if pr.Draft {
 		log.Info("skip", "reason", "draft")
+		release()
 		return
 	}
 	for _, login := range h.SkipUserLogins {
 		if pr.UserLogin == login {
 			log.Info("skip", "reason", "user="+login)
+			release()
 			return
 		}
 	}
 	if pr.UserType == "Bot" && pr.UserLogin != "" {
 		log.Info("skip", "reason", "user_type=Bot")
+		release()
 		return
 	}
 	if total := pr.Additions + pr.Deletions; total > h.MaxLinesPerPR {
 		log.Info("skip", "reason", fmt.Sprintf("size=%d>limit=%d", total, h.MaxLinesPerPR))
+		release()
 		return
 	}
 
@@ -769,6 +802,7 @@ func (h *Handler) handleCommentTriggerAsync(parent context.Context, log *slog.Lo
 		InstallID:       installID,
 		BaseRef:         pr.BaseRef,
 		HeadIsUntrusted: pr.HeadIsUntrusted(),
+		release:         release,
 	})
 }
 
@@ -799,22 +833,50 @@ func (h *Handler) shouldSkip(pre *pullRequestEvent) (bool, string) {
 	if pre.Installation.ID == 0 {
 		return true, "no installation id (App not installed on this repo?)"
 	}
+	return false, ""
+}
 
-	// Dedup by repo|pr|sha — prevents double-post on webhook redelivery.
-	key := fmt.Sprintf("%s|%d|%s", pre.Repository.FullName, pre.PullRequest.Number, pre.PullRequest.Head.SHA)
+// dedupTTL is how long a reviewed head SHA blocks a repeat review of the same
+// PR. Webhook redeliveries arrive within seconds; an hour also absorbs GitHub
+// firing synchronize twice for one push.
+const dedupTTL = time.Hour
+
+func dedupKey(repo string, pr int, sha string) string {
+	return fmt.Sprintf("%s|%d|%s", repo, pr, sha)
+}
+
+// claimDedup atomically records that a review of this repo|pr|sha is under
+// way. ok is false when a claim from the last dedupTTL still stands, and then
+// release is a no-op. Otherwise release deletes the claim so a later delivery
+// of the same SHA can be reviewed; the caller invokes it on every path where
+// the review it claimed for never reaches the provider (queue shed, spend
+// cap, a failed token mint or diff fetch). Before this existed the claim was
+// a side effect of shouldSkip, so a shed review returned 202 and then read
+// as "duplicate" for an hour.
+func (h *Handler) claimDedup(key string) (release func(), ok bool) {
+	h.ensureInit()
 	h.dedupeMu.Lock()
 	defer h.dedupeMu.Unlock()
-	if t, ok := h.seen[key]; ok && time.Since(t) < time.Hour {
-		return true, "duplicate (already reviewed this head_sha within the hour)"
+	now := time.Now()
+	if t, seen := h.seen[key]; seen && now.Sub(t) < dedupTTL {
+		return func() {}, false
 	}
-	h.seen[key] = time.Now()
+	h.seen[key] = now
 	// Opportunistic GC of stale entries — bounded memory.
 	for k, t := range h.seen {
-		if time.Since(t) > 2*time.Hour {
+		if now.Sub(t) > 2*dedupTTL {
 			delete(h.seen, k)
 		}
 	}
-	return false, ""
+	return func() {
+		h.dedupeMu.Lock()
+		defer h.dedupeMu.Unlock()
+		// Only undo our own claim. A later claim under the same key (a
+		// redelivery that arrived after we released) must survive.
+		if t, seen := h.seen[key]; seen && t.Equal(now) {
+			delete(h.seen, key)
+		}
+	}, true
 }
 
 // reviewPR runs the actual LLM review and posts the result. Errors are logged
@@ -840,6 +902,13 @@ type reviewTarget struct {
 	// HeadIsUntrusted marks a PR whose head commit lives in a fork, i.e. was
 	// authored by someone without write access to the base repo.
 	HeadIsUntrusted bool
+	// release gives back whatever claim the caller made before dispatching:
+	// the head-SHA dedup slot on the webhook path, the trigger cooldown on
+	// the comment path. reviewPR calls it on every exit that happens before
+	// the provider is invoked, so a review that never ran does not block a
+	// retry. After the provider call the claim stands — money was spent, and
+	// dedup and cooldown exist to bound exactly that.
+	release func()
 }
 
 // reviewPhaseBudget bounds each of the two working phases of a review: the
@@ -853,7 +922,12 @@ type reviewTarget struct {
 const reviewPhaseBudget = 90 * time.Second
 
 func (h *Handler) reviewPR(parent context.Context, log *slog.Logger, t reviewTarget) {
-	defer recoverPanic(log, "review goroutine")
+	// See reviewTarget.release: called on every exit before the provider is
+	// invoked, never after.
+	release := t.release
+	if release == nil {
+		release = func() {}
+	}
 
 	// Setup phase. Deferred cancel rather than an explicit one at the end of
 	// the phase: early returns below still use this context to post their
@@ -870,6 +944,7 @@ func (h *Handler) reviewPR(parent context.Context, log *slog.Logger, t reviewTar
 			"reason", "hourly spend cap reached",
 			"spent_usd", fmt.Sprintf("%.4f", spent),
 			"cap_usd", fmt.Sprintf("%.2f", h.MaxSpendPerHourUSD))
+		release()
 		return
 	}
 
@@ -877,6 +952,7 @@ func (h *Handler) reviewPR(parent context.Context, log *slog.Logger, t reviewTar
 	token, err := h.TokenSource.Token(ctx, t.InstallID)
 	if err != nil {
 		log.Error("mint installation token", "err", err)
+		release()
 		return
 	}
 	client := ghc.NewHTTPClient(token)
@@ -884,11 +960,13 @@ func (h *Handler) reviewPR(parent context.Context, log *slog.Logger, t reviewTar
 	raw, err := client.FetchDiff(ctx, repo, prNum)
 	if err != nil {
 		log.Error("fetch diff", "err", err)
+		release()
 		return
 	}
 	hunks, err := diff.ParseUnifiedDiff(raw)
 	if err != nil {
 		log.Error("parse diff", "err", err)
+		release()
 		return
 	}
 
