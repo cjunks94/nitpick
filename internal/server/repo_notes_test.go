@@ -1,7 +1,9 @@
 package server
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -43,26 +45,35 @@ review:
 	}
 }
 
+// No .nitpick.yaml in the repo is the common case: nil config, an INFO line,
+// and no WARN — the operator must not be paged for a file that was never
+// meant to exist.
 func TestFetchRepoConfig_No404IsSilent(t *testing.T) {
-	// No .nitpick.yaml in the repo — the most common case. Returns nil,
-	// no panic, no warning log (silent fallback).
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 	}))
 	defer srv.Close()
 	client := &ghc.HTTPClient{BaseURL: srv.URL, Token: "test", HTTPClient: srv.Client()}
 
-	got := fetchRepoConfig(context.Background(), silentLogger(), client, "owner/repo", "abc")
+	var buf bytes.Buffer
+	log := slog.New(slog.NewJSONHandler(&buf, nil))
+	got := fetchRepoConfig(context.Background(), log, client, "owner/repo", "abc")
 	if got != nil {
 		t.Errorf("expected nil on 404, got: %+v", got)
 	}
+	if strings.Contains(buf.String(), `"level":"WARN"`) {
+		t.Errorf("404 must not log at WARN; logs:\n%s", buf.String())
+	}
+	if !strings.Contains(buf.String(), "no .nitpick.yaml at ref") {
+		t.Errorf("404 should log the absence at INFO; logs:\n%s", buf.String())
+	}
 }
 
+// Transport / auth / rate-limit failures still degrade to nil so the review
+// continues with defaults rather than crashing the goroutine — but they are
+// logged at WARN, so the operator can tell a GitHub problem from the
+// (common) absence case.
 func TestFetchRepoConfig_5xxIsGraceful(t *testing.T) {
-	// Transport / auth / rate-limit failures still degrade to nil so the
-	// review continues with defaults rather than crashing the goroutine.
-	// The distinction from the 404 path is in the log level (Warn vs Info),
-	// asserted by the call shape rather than log capture here.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = w.Write([]byte("github exploded"))
@@ -70,9 +81,14 @@ func TestFetchRepoConfig_5xxIsGraceful(t *testing.T) {
 	defer srv.Close()
 	client := &ghc.HTTPClient{BaseURL: srv.URL, Token: "test", HTTPClient: srv.Client(), MaxAttempts: 1}
 
-	got := fetchRepoConfig(context.Background(), silentLogger(), client, "owner/repo", "abc")
+	var buf bytes.Buffer
+	log := slog.New(slog.NewJSONHandler(&buf, nil))
+	got := fetchRepoConfig(context.Background(), log, client, "owner/repo", "abc")
 	if got != nil {
 		t.Errorf("expected nil on 5xx, got: %+v", got)
+	}
+	if !strings.Contains(buf.String(), `"level":"WARN"`) || !strings.Contains(buf.String(), "fetch failed") {
+		t.Errorf("5xx should log a WARN naming the fetch failure; logs:\n%s", buf.String())
 	}
 }
 

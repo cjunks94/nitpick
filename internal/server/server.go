@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -70,14 +71,26 @@ func Run(cfg Config) error {
 		port = "8080"
 	}
 	srv := newHTTPServer(":"+port, withRequestLogging(mux, logger))
+	ln, err := net.Listen("tcp", srv.Addr)
+	if err != nil {
+		return fmt.Errorf("listen %s: %w", srv.Addr, err)
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
+	return serve(ctx, logger, srv, ln, handler, httpShutdownGrace, reviewDrainGrace)
+}
+
+// serve runs srv on ln until ctx is cancelled, then shuts the listener down
+// and drains the handler's in-flight reviews. Split from Run so a test can
+// drive the shutdown ordering through a context and a loopback listener
+// instead of a real signal; Run passes the production grace windows.
+func serve(ctx context.Context, logger *slog.Logger, srv *http.Server, ln net.Listener, handler *Handler, shutdownGrace, drainGrace time.Duration) error {
 	errCh := make(chan error, 1)
 	go func() {
-		logger.Info("nitpick serve listening", "addr", srv.Addr)
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		logger.Info("nitpick serve listening", "addr", ln.Addr().String())
+		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 		}
 		close(errCh)
@@ -90,7 +103,7 @@ func Run(cfg Config) error {
 		logger.Info("shutdown signal received, draining...")
 	}
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), httpShutdownGrace)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
 	defer cancel()
 	// Deliberately not an early return. Shutdown's usual error is
 	// DeadlineExceeded, raised when one slow client holds a connection open
@@ -109,12 +122,12 @@ func Run(cfg Config) error {
 	// process exited with every in-flight review killed mid-LLM-call: tokens
 	// billed, nothing posted. Both CLAUDE.md and HANDOFF.md claimed the
 	// SIGTERM handler prevented exactly that; it did not until now.
-	logger.Info("draining in-flight reviews", "grace_s", int(reviewDrainGrace.Seconds()))
-	if handler.Drain(reviewDrainGrace) {
+	logger.Info("draining in-flight reviews", "grace_s", int(drainGrace.Seconds()))
+	if handler.Drain(drainGrace) {
 		logger.Info("all in-flight reviews completed")
 	} else {
 		logger.Warn("drain window expired; remaining reviews cancelled",
-			"grace_s", int(reviewDrainGrace.Seconds()))
+			"grace_s", int(drainGrace.Seconds()))
 	}
 	logger.Info("shutdown complete")
 	return shutdownErr

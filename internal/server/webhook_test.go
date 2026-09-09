@@ -2,14 +2,13 @@ package server
 
 import (
 	"context"
-	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/cjunks94/nitpick/internal/diff"
@@ -72,9 +71,9 @@ func TestFetchContextFiles_HappyPath(t *testing.T) {
 
 func TestFetchContextFiles_DedupsRepeatedFile(t *testing.T) {
 	// Multiple hunks on the same file shouldn't cause two fetches.
-	calls := 0
+	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls++
+		calls.Add(1)
 		_, _ = w.Write([]byte("ok"))
 	}))
 	defer srv.Close()
@@ -83,8 +82,8 @@ func TestFetchContextFiles_DedupsRepeatedFile(t *testing.T) {
 	hunks := []diff.Hunk{{File: "a.go"}, {File: "a.go"}, {File: "a.go"}}
 
 	got := fetchContextFiles(context.Background(), silentLogger(), client, "owner/repo", "abc", hunks)
-	if len(got) != 1 || calls != 1 {
-		t.Fatalf("got=%d files, calls=%d; want 1/1", len(got), calls)
+	if n := calls.Load(); len(got) != 1 || n != 1 {
+		t.Fatalf("got=%d files, calls=%d; want 1/1", len(got), n)
 	}
 }
 
@@ -215,11 +214,6 @@ func TestFetchContextFiles_SortsByChangeWeightDescending(t *testing.T) {
 		}
 	}
 }
-
-// Silence the unused-import warning when the test file is the only one in
-// the package that uses these — keeps the build clean across refactors.
-var _ = json.Marshal
-var _ = base64.StdEncoding
 
 // configRef governs whether a PR can supply its own reviewer instructions via
 // .nitpick.yaml. The unknown-origin cases must fail closed: GitHub sends

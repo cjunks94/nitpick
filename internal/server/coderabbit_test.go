@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -17,11 +18,16 @@ import (
 
 // fakeCommentsAPI serves the two comment-listing endpoints. inline and toplevel are
 // returned verbatim; calls counts requests so tests can assert polling.
+//
+// mu guards inline and toplevel: the handler goroutine reads them while
+// onCall (or the test) mutates them.
 type fakeCommentsAPI struct {
+	mu       sync.Mutex
 	inline   []map[string]any
 	toplevel []map[string]any
 	calls    atomic.Int32
-	// onCall, if set, runs before each response and may mutate the fixtures.
+	// onCall, if set, runs before each response, under mu, and may mutate
+	// the fixtures.
 	onCall func(n int32)
 }
 
@@ -29,6 +35,8 @@ func (f *fakeCommentsAPI) server(t *testing.T) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		n := f.calls.Add(1)
+		f.mu.Lock()
+		defer f.mu.Unlock()
 		if f.onCall != nil {
 			f.onCall(n)
 		}
@@ -168,6 +176,17 @@ func TestFetchPriorFindings_CapsPromptSize(t *testing.T) {
 	}
 }
 
+// lowerPollFloor drops the production 5s poll floor to 1ms for the duration
+// of the test, so polling tests finish in milliseconds. The tests in this
+// file that call it must not run in parallel with each other: the floor is a
+// package var.
+func lowerPollFloor(t *testing.T) {
+	t.Helper()
+	prev := minCodeRabbitPollInterval
+	minCodeRabbitPollInterval = time.Millisecond
+	t.Cleanup(func() { minCodeRabbitPollInterval = prev })
+}
+
 // Wait is opt-in; with it off, no polling happens at all.
 func TestWaitForCodeRabbit_NoOpWhenDisabled(t *testing.T) {
 	f := &fakeCommentsAPI{}
@@ -177,7 +196,8 @@ func TestWaitForCodeRabbit_NoOpWhenDisabled(t *testing.T) {
 	waitForCodeRabbit(context.Background(), silentLogger(), clientFor(srv),
 		"owner/repo", 1, config.CodeRabbitConfig{Wait: false}, time.Now())
 
-	if elapsed := time.Since(start); elapsed > time.Second {
+	// No network call and no timer: this is a function call's worth of time.
+	if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
 		t.Errorf("waited %v with Wait disabled; should return immediately", elapsed)
 	}
 	if n := f.calls.Load(); n != 0 {
@@ -186,9 +206,10 @@ func TestWaitForCodeRabbit_NoOpWhenDisabled(t *testing.T) {
 }
 
 func TestWaitForCodeRabbit_ReturnsOnceCodeRabbitPosts(t *testing.T) {
+	lowerPollFloor(t)
 	since := time.Now()
 	f := &fakeCommentsAPI{}
-	// CodeRabbit "posts" on the third poll.
+	// CodeRabbit "posts" on the third poll. onCall runs under f.mu.
 	f.onCall = func(n int32) {
 		if n >= 3 && len(f.inline) == 0 {
 			f.inline = []map[string]any{
@@ -198,39 +219,61 @@ func TestWaitForCodeRabbit_ReturnsOnceCodeRabbitPosts(t *testing.T) {
 	}
 	srv := f.server(t)
 
+	start := time.Now()
 	done := make(chan struct{})
 	go func() {
 		waitForCodeRabbit(context.Background(), silentLogger(), clientFor(srv),
 			"owner/repo", 1, config.CodeRabbitConfig{
 				Wait:         true,
 				WaitTimeout:  config.Duration(30 * time.Second),
-				PollInterval: config.Duration(10 * time.Millisecond), // clamped to the 5s floor
+				PollInterval: config.Duration(time.Millisecond),
 			}, since)
 		close(done)
 	}()
 
 	select {
 	case <-done:
-	case <-time.After(30 * time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("waitForCodeRabbit never returned after CodeRabbit posted")
+	}
+	// Two polls at a 1ms interval plus the one that sees the comment. Each
+	// poll is two listings (inline + top-level) until the inline hit ends it.
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Errorf("took %v on a 1ms poll floor; the wait is still sleeping through the production interval", elapsed)
+	}
+	if n := f.calls.Load(); n < 3 {
+		t.Errorf("made %d API calls, want at least 3 (the comment appears on the third)", n)
+	}
+	if n := f.calls.Load(); n > 6 {
+		t.Errorf("made %d API calls, want at most 6 (three polls of two listings each)", n)
 	}
 }
 
 // The timeout is a floor on progress, not a reason to skip the review.
 func TestWaitForCodeRabbit_ProceedsOnTimeout(t *testing.T) {
+	lowerPollFloor(t)
 	f := &fakeCommentsAPI{} // never posts
 	srv := f.server(t)
 
+	const timeout = 50 * time.Millisecond
 	start := time.Now()
 	waitForCodeRabbit(context.Background(), silentLogger(), clientFor(srv),
 		"owner/repo", 1, config.CodeRabbitConfig{
 			Wait:         true,
-			WaitTimeout:  config.Duration(50 * time.Millisecond),
+			WaitTimeout:  config.Duration(timeout),
 			PollInterval: config.Duration(10 * time.Millisecond),
 		}, time.Now())
 
-	if elapsed := time.Since(start); elapsed > 10*time.Second {
-		t.Errorf("took %v; should give up promptly at the deadline", elapsed)
+	elapsed := time.Since(start)
+	if elapsed < timeout {
+		t.Errorf("returned after %v, before the %v deadline", elapsed, timeout)
+	}
+	if elapsed > timeout+500*time.Millisecond {
+		t.Errorf("took %v; should give up promptly at the %v deadline", elapsed, timeout)
+	}
+	// 10ms polls inside a 50ms window: at least three polls of two listings.
+	if n := f.calls.Load(); n < 6 {
+		t.Errorf("made %d API calls, want at least 6 — polling stopped early", n)
 	}
 }
 
@@ -238,6 +281,13 @@ func TestWaitForCodeRabbit_ProceedsOnTimeout(t *testing.T) {
 // concurrency slot open for minutes.
 func TestWaitForCodeRabbit_HonorsContextCancel(t *testing.T) {
 	f := &fakeCommentsAPI{} // never posts
+	polled := make(chan struct{}, 1)
+	f.onCall = func(int32) {
+		select {
+		case polled <- struct{}{}:
+		default:
+		}
+	}
 	srv := f.server(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -251,13 +301,19 @@ func TestWaitForCodeRabbit_HonorsContextCancel(t *testing.T) {
 		close(done)
 	}()
 
-	time.Sleep(100 * time.Millisecond)
+	// Cancel once the wait is parked in its first poll sleep (the production
+	// 5s floor, so without cancellation this test would take 5s per poll).
+	<-polled
 	cancel()
 
+	start := time.Now()
 	select {
 	case <-done:
-	case <-time.After(10 * time.Second):
+	case <-time.After(2 * time.Second):
 		t.Fatal("wait ignored context cancellation — a drain would hang")
+	}
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Errorf("returned %v after cancel; should abandon the poll sleep immediately", elapsed)
 	}
 }
 
@@ -273,28 +329,22 @@ func TestWaitForCodeRabbit_IgnoresStaleComments(t *testing.T) {
 	}
 	srv := f.server(t)
 
+	const timeout = 60 * time.Millisecond
 	start := time.Now()
 	waitForCodeRabbit(context.Background(), silentLogger(), clientFor(srv),
 		"owner/repo", 1, config.CodeRabbitConfig{
 			Wait:         true,
-			WaitTimeout:  config.Duration(60 * time.Millisecond),
+			WaitTimeout:  config.Duration(timeout),
 			PollInterval: config.Duration(10 * time.Millisecond),
 		}, now)
 
 	// Should have waited out the deadline rather than matching the old comment.
-	if elapsed := time.Since(start); elapsed < 50*time.Millisecond {
+	elapsed := time.Since(start)
+	if elapsed < timeout {
 		t.Errorf("returned after %v — a stale comment satisfied the wait", elapsed)
 	}
-}
-
-func TestFilterByAuthor_CaseInsensitive(t *testing.T) {
-	in := []ghc.ExistingComment{
-		{Author: "CodeRabbitAI[bot]"},
-		{Author: "alice"},
-	}
-	got := ghc.FilterByAuthor(in, []string{"coderabbitai[bot]"})
-	if len(got) != 1 {
-		t.Fatalf("got %d, want 1 — login matching should be case-insensitive", len(got))
+	if elapsed > timeout+500*time.Millisecond {
+		t.Errorf("took %v; should stop at the %v deadline", elapsed, timeout)
 	}
 }
 
@@ -322,12 +372,14 @@ func TestWaitForCodeRabbit_TimeoutCancelsHungRequest(t *testing.T) {
 		}, time.Now())
 	elapsed := time.Since(start)
 
-	if elapsed > 5*time.Second {
+	// 100ms timeout: the hung request is cut off at the deadline, not at the
+	// client's own (absent) per-request timeout.
+	if elapsed > 100*time.Millisecond+500*time.Millisecond {
 		t.Fatalf("wait took %v; a hung request must be cut off at WaitTimeout", elapsed)
 	}
 	select {
 	case <-released:
-	case <-time.After(5 * time.Second):
+	case <-time.After(2 * time.Second):
 		t.Fatal("server never saw the request context cancelled")
 	}
 }
