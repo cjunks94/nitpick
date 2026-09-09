@@ -78,6 +78,7 @@ func TestPullRequest_ContextFilesReadAtHeadEvenForForks(t *testing.T) {
 		sha  = "deadbeef"
 	)
 	h := minimalHandler("s")
+	h.AttachContext = true // opt-in; the default is asserted below
 	gh := newFakeGitHubAPI(base, pr, sha)
 	gh.contents["a.go"] = "package a\nfunc A() {}\nvar x = 1\n"
 	p := &recordingProvider{}
@@ -132,5 +133,34 @@ func TestPullRequest_DuplicateDeliveryReviewsOnce(t *testing.T) {
 	}
 	if n := len(gh.reviews()); n != 1 {
 		t.Errorf("reviews posted = %d, want 1", n)
+	}
+}
+
+// Whole-file context is off by default: the only contents request a review
+// makes is the .nitpick.yaml read at the config ref. Measured 2026-09-09
+// (HANDOFF.md): with the context attached, Sonnet hit no labels at all.
+func TestPullRequest_ContextFilesOffByDefault(t *testing.T) {
+	t.Parallel()
+	const (
+		base = "owner/repo"
+		pr   = 8
+		sha  = "cafef00d"
+	)
+	h := minimalHandler("s")
+	gh := newFakeGitHubAPI(base, pr, sha)
+	gh.contents["a.go"] = "package a"
+	p := &recordingProvider{}
+	wireFakes(t, h, gh, p)
+
+	serveAndDrain(t, h, "pull_request", prPayloadFrom(base, base, pr, sha))
+
+	refs := gh.refs()
+	if len(refs) != 1 {
+		t.Fatalf("contents requests = %v, want only the config read", refs)
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.requests) != 1 || len(p.requests[0].ContextFiles) != 0 {
+		t.Fatalf("provider received context files with AttachContext off: %+v", p.requests)
 	}
 }

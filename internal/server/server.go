@@ -27,6 +27,12 @@ type Config struct {
 	GitHubPrivateKey []byte // PEM-encoded RSA key from the App settings page
 	WebhookSecret    string // shared secret configured on the App webhook
 	Model            string // anthropic model id, empty = Haiku default
+	// AttachContext turns on whole-file context fetching for reviews
+	// (NITPICK_CONTEXT_FILES=1). Off by default: measured 2026-09-09 with
+	// the eval attaching exactly what serve sends, Sonnet hit 0 of 18
+	// labels in three runs at 2.4x the cost, against 2 / 3 / 2 diff-only.
+	// See HANDOFF.md. Opt-in until the prompt's context handling is tuned.
+	AttachContext bool
 }
 
 // Run starts the HTTP server, blocks until SIGTERM/SIGINT, then gracefully
@@ -55,6 +61,7 @@ func Run(cfg Config) error {
 	tokenSource := ghapp.NewInstallationTokenSource(cfg.GitHubAppID, key)
 	handler := NewHandler(cfg.WebhookSecret, tokenSource, p, logger)
 	handler.ProviderForModel = MemoizedProviderFactory("anthropic")
+	handler.AttachContext = cfg.AttachContext
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
