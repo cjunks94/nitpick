@@ -40,6 +40,15 @@ jobs:
       # guarded maps. The race detector needs cgo, which rules it out on a
       # bare Windows dev box — so CI is the only place it actually runs.
       - run: go test -race -coverprofile=coverage.out ./...
+      # 80% over internal/ (the business logic). cmd/ and main.go are flag
+      # parsing and env wiring at 0% by design and would drag the total
+      # under the bar without saying anything about the code that matters.
+      - name: Coverage gate (internal packages >= 80%)
+        run: |
+          grep -v -E '^github.com/cjunks94/nitpick/(cmd/|main\.go)' coverage.out > coverage-internal.out
+          pct=$(go tool cover -func=coverage-internal.out | awk '/^total:/ { sub("%", "", $3); print $3 }')
+          echo "internal coverage: ${pct}%"
+          awk -v p="$pct" 'BEGIN { exit (p + 0 < 80) ? 1 : 0 }'
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
         with:
