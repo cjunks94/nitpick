@@ -1,22 +1,22 @@
 # Eval report — `anthropic-claude-sonnet-4-6`
 
-Cases: 20  ·  Expected findings: 7  ·  Produced: 5
+Cases: 20  ·  Expected findings: 7  ·  Produced: 4
 
 Matcher: file + line ±3, plus a label keyword in the body (7 of 7 labels carry keywords)
 
 | Metric | Value |
 |---|---|
-| Precision | 0.200 |
+| Precision | 0.250 |
 | Recall (all) | 0.143 |
 | Recall (critical) | 0.000 |
 | Recall (useful) | 0.143 |
-| Noise rate | 0.800 |
-| Avg $/PR | $0.0186 |
+| Noise rate | 0.750 |
+| Avg $/PR | $0.0181 |
 
 ## Per-case
 | PR | Repo | Expected | Hits | Misses | Extras | $ |
 |---|---|---|---|---|---|---|
-| #87 | cjunks94/resume-improvements | 1 | 0 | 1 | 0 | $0.0128 |
+| #87 | cjunks94/resume-improvements | 1 | 0 | 1 | 0 | $0.0064 |
 | #82 | cjunks94/resume-improvements | 0 | 0 | 0 | 0 | $0.0018 |
 | #68 | cjunks94/resume-improvements | 0 | 0 | 0 | 0 | $0.0024 |
 | #44 | cjunks94/panoptrain | 0 | 0 | 0 | 0 | $0.0061 |
@@ -24,13 +24,13 @@ Matcher: file + line ±3, plus a label keyword in the body (7 of 7 labels carry 
 | #29 | cjunks94/agentic-portfolio | 1 | 0 | 1 | 0 | $0.0152 |
 | #25 | cjunks94/agentic-portfolio | 0 | 0 | 0 | 0 | $0.0205 |
 | #56 | cjunks94/panoptrain | 1 | 0 | 1 | 0 | $0.0921 |
-| #121 | cjunks94/exportee-rails | 1 | 1 | 0 | 2 | $0.0324 |
+| #121 | cjunks94/exportee-rails | 1 | 1 | 0 | 1 | $0.0300 |
 | #101 | cjunks94/exportee-rails | 1 | 0 | 1 | 0 | $0.0118 |
 | #28 | cjunks94/agentic-portfolio | 0 | 0 | 0 | 0 | $0.0047 |
 | #27 | cjunks94/agentic-portfolio | 0 | 0 | 0 | 0 | $0.0057 |
 | #59 | cjunks94/panoptrain | 1 | 0 | 1 | 0 | $0.0136 |
 | #54 | cjunks94/panoptrain | 0 | 0 | 0 | 0 | $0.0369 |
-| #117 | cjunks94/exportee-rails | 1 | 0 | 1 | 1 | $0.0196 |
+| #117 | cjunks94/exportee-rails | 1 | 0 | 1 | 1 | $0.0195 |
 | #69 | cjunks94/resume-improvements | 0 | 0 | 0 | 0 | $0.0777 |
 | #64 | cjunks94/resume-improvements | 0 | 0 | 0 | 0 | $0.0018 |
 | #57 | cjunks94/resume-improvements | 0 | 0 | 0 | 1 | $0.0037 |
@@ -49,9 +49,8 @@ Matcher: file + line ±3, plus a label keyword in the body (7 of 7 labels carry 
 - MISS `packages/client/src/lib/tafCurrentPeriod.ts:28` [useful/correctness] selection loop picks last in iteration order, not latest timeFrom — assumes upstream returns basePeriods sorted ascending
 
 ### #121 cjunks94/exportee-rails
-- HIT `app/services/sources/salesforce_adapter.rb:45` [useful/correctness] Restforce's `query` returns a `Restforce::Collection` (lazy-enumerable), but the loop accumulates all records into `rows` before returning — this is acceptable. However, if the collection auto-paginates (it does with `query_all`), large result sets will be fully materialized in memory. The comment on `extract_streaming` (line 53) acknowledges there is no streaming protocol, but callers expecting bounded memory usage via streaming may be surprised. No bug, but the contract documented in the comment ('COPY-like streaming') is silently violated by full materialization for any query size.
-- EXTRA `app/services/sources/salesforce_adapter.rb:74` [useful/correctness] If `connection_config` lacks a `"credentials"` key, `fetch("credentials", config)` falls back to the entire `config` hash. Keys like `instance_url` and `sandbox` would then be passed as credential lookups (e.g., `credentials["username"]` returns nil). This silently produces a broken client rather than a clear error, making misconfiguration hard to debug.
-- EXTRA `app/services/sources/salesforce_adapter.rb:84` [useful/correctness] `record.to_hash` on a `Hashie::Mash` subclass performs a shallow conversion; nested Mash objects (e.g., related-object fields from a relationship query like `Contact.Account.Name`) will remain as Mash instances rather than plain hashes, potentially causing serialization issues downstream.
+- HIT `app/services/sources/salesforce_adapter.rb:44` [useful/correctness] Restforce's `query` returns a Restforce::Collection which is lazily enumerated; accumulating every record into `rows` in memory defeats pagination and will OOM on large result sets. The `extract_streaming` alias on line 53 makes this more visible. Consider using `query_all` with a block or returning an Enumerator if the base adapter contract allows it.
+- EXTRA `app/services/sources/salesforce_adapter.rb:74` [useful/correctness] `credentials` falls back to `config` when the `credentials` key is absent, but `config` is the same hash that already contains the `credentials` key, not the flat credential values. A connection_config without a nested `credentials` key will result in credential lookups like `config['username']` returning nil rather than raising, silently sending nil to Restforce.
 
 ### #101 cjunks94/exportee-rails
 - MISS `app/controllers/api/v1/base_controller.rb:83` [useful/security] bad_request_with_message renders raw exception.message from ArgumentError; risks leaking internal context (CLAUDE.md: error messages must not leak internal details)
@@ -61,7 +60,7 @@ Matcher: file + line ±3, plus a label keyword in the body (7 of 7 labels carry 
 
 ### #117 cjunks94/exportee-rails
 - MISS `app/services/transforms/data_frame_pipeline.rb:100` [useful/security] const_get with widget_name from YAML config can resolve to unintended constants; safer to dispatch via an explicit widget→class hash
-- EXTRA `app/services/transforms/data_frame_pipeline.rb:101` [critical/correctness] If `widget_name` is not a known constant under `Widgets::Builtins`, `const_get` raises `NameError` rather than returning nil, making the "Unknown widget — fall back" path a runtime error instead of a graceful fallback. A `rescue NameError` or a pre-check via `const_defined?` is needed.
+- EXTRA `app/services/transforms/data_frame_pipeline.rb:101` [critical/correctness] When `widget_name` is an unknown string (the `else` branch), `const_get(widget_name.camelize)` will raise `NameError` rather than gracefully falling back — there is no rescue around it. An unrecognised widget name in production will crash the entire export run instead of skipping or logging the unknown widget.
 
 ### #57 cjunks94/resume-improvements
-- EXTRA `.github/workflows/canary-build.yml:23` [useful/invalid-action-version] actions/checkout@v6 does not exist; the latest stable release is v4. This will cause all jobs using this step to fail at runtime.
+- EXTRA `.github/workflows/canary-build.yml:23` [useful/invalid-action-version] actions/checkout@v6 does not exist; the latest stable release is v4. This will cause all jobs referencing it to fail at checkout.
