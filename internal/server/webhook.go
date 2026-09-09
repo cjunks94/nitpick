@@ -1073,6 +1073,17 @@ func (h *Handler) reviewPR(parent context.Context, log *slog.Logger, t reviewTar
 		return
 	}
 	duration := time.Since(start)
+
+	// GitHub rejects the whole review with 422 if any one comment is off the
+	// diff, and the model call is already paid for by now. Drop what cannot
+	// be placed rather than lose every finding in the batch.
+	var dropped []provider.Comment
+	res.Comments, dropped = ghc.DropUnanchored(res.Comments, hunks)
+	if len(dropped) > 0 {
+		log.Warn("dropped findings anchored outside the diff",
+			"findings_dropped_unanchored", len(dropped),
+			"first", fmt.Sprintf("%s:%d", dropped[0].File, dropped[0].Line))
+	}
 	statusBody := ghc.BuildStatusCommentBody(reviewer.Name(), res.Comments, res.CostUSD, duration)
 
 	if len(res.Comments) == 0 {

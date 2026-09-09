@@ -203,7 +203,7 @@ Once that works end-to-end, repeat steps 2–4 above (Railway deploy + point web
 | Logs show `installation token exchange: HTTP 401` | `GITHUB_APP_PRIVATE_KEY` is missing newlines or wrong key. Re-download from App settings and re-paste — include the `-----BEGIN/END-----` lines. |
 | Review never posts but logs show `review complete (silent)` | The LLM returned no findings for this diff — that's a clean review, not a bug. Check with `--dry-run` locally if you expect findings. |
 | `HTTP 404` on `FetchDiff` | The App isn't installed on that repo, or the PR is in a fork the App doesn't have access to. |
-| `HTTP 422` on `PostReview` | The PR head moved between fetch and post (someone pushed again). The next webhook will fire — this is expected, not actionable. |
+| `HTTP 422` on `PostReview` | The PR head moved between fetch and post (someone pushed again); the next webhook will fire. Findings the model anchors outside the diff are dropped before posting (`findings_dropped_unanchored` in the log), so a 422 no longer means one bad line number lost the whole review. |
 | Railway build fails on `go: downloading ...` | Network blip during build; redeploy. If persistent, check Railway's status page. |
 | Webhook arrives but logs show `skip reason=user_type=Bot` | A non-human opened the PR (CodeRabbit, dependabot). nitpick skips bot accounts by default — adjust `SkipUserLogins` in `internal/server/webhook.go` if you want different behavior. |
 | Container restarts immediately after deploy | Almost always missing env var. Logs will say `missing required config`. Double-check all 4 required vars are set in Railway. |
