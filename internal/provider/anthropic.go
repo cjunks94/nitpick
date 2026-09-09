@@ -342,8 +342,8 @@ func matchingBrace(s string, start int) int {
 func renderUserMessage(req ReviewRequest) string {
 	var b strings.Builder
 	if len(req.ContextFiles) > 0 {
-		b.WriteString("=== CONTEXT FILES (read-only background, do NOT flag issues in these) ===\n")
-		b.WriteString("Full content of files referenced by the diff at the PR head SHA. Use these to understand types, return paths, helper definitions, and framework conventions. Findings must still be anchored on lines that appear in the diff below.\n\n")
+		b.WriteString("=== CONTEXT FILES (whole files at the PR head SHA; the changed files are here in full) ===\n")
+		b.WriteString("Use these as evidence about the diff below: what helpers return, what callers pass, whether a guard exists elsewhere. A finding about a changed line that the surrounding code supports is a finding to report. Anchor every finding on a line of the diff; unchanged code is context, not a target.\n\n")
 		for _, cf := range req.ContextFiles {
 			fmt.Fprintf(&b, "--- file: %s ---\n%s\n--- end %s ---\n\n", cf.Path, string(cf.Content), cf.Path)
 		}

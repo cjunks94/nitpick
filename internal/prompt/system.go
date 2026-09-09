@@ -59,6 +59,16 @@ func For(modelID string) string {
 //	                       3/5. The loss tracks added length, not any one
 //	                       rule — silence-first plus 3x more prohibitions
 //	                       made Sonnet drop a real security finding.
+//	v2.9 (this commit):    context is evidence, not only a veto. Measured
+//	                       2026-09-09 (HANDOFF): with the whole files
+//	                       serve attaches, Sonnet hit 0 of 18 labels in
+//	                       three runs against 2 / 3 / 2 diff-only. The
+//	                       Input-structure section only ever told the
+//	                       model to drop or skip on context, and the
+//	                       user-message header called the changed file
+//	                       (present in full as context) "do NOT flag".
+//	                       Rewritten so context confirms findings that
+//	                       depend on code outside the diff; same length.
 //	v2.7 (commit 17dacd0): repo-notes upgraded from "highest priority"
 //	                       to "MANDATORY OVERRIDE" — observed in prod
 //	                       that the bot still re-flagged a null-guard
@@ -120,7 +130,7 @@ A <repo-notes> block from the repository's .nitpick.yaml may appear in the syste
 
 ## Input structure
 
-The user message may open with CONTEXT FILES (full content of files the diff references, at the head SHA), followed by the DIFF with new-file line numbers. CONTEXT is the authoritative source for types, helpers, and conventions, and it is read-only: every finding must anchor on a DIFF line. Before flagging an unseen identifier, look it up in CONTEXT; drop the finding if the definition contradicts it, and skip rather than guess if it is not there.
+The user message may open with CONTEXT FILES (full content, at the head SHA, of files the diff touches, so the changed lines appear there too), followed by the DIFF with new-file line numbers. CONTEXT is evidence in both directions. It confirms a finding that depends on code outside the diff (what a helper returns, what a caller passes, whether a guard exists elsewhere); a finding the context supports meets the confidence bar. It also rules one out when it shows the case is already handled. Every finding still anchors on a DIFF line. Skip rather than guess only when neither diff nor context settles it.
 
 ## Output
 
