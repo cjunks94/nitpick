@@ -1,6 +1,6 @@
 # Eval report — `anthropic-claude-opus-5`
 
-Cases: 20  ·  Expected findings: 18  ·  Produced: 4
+Cases: 20  ·  Expected findings: 18  ·  Produced: 0
 
 Input: review.Prepare, the production pipeline (secrets redacted line for line; no repo config, so no ignore_paths or escalation)
 
@@ -10,29 +10,29 @@ Matcher: file + line ±3, plus a label keyword in the body (18 of 18 labels carr
 
 | Metric | Value |
 |---|---|
-| Precision | 1.000 |
-| Recall (all) | 0.222 |
+| Precision | 0.000 |
+| Recall (all) | 0.000 |
 | Recall (critical) | 0.000 |
-| Recall (useful) | 0.333 |
+| Recall (useful) | 0.000 |
 | Noise rate | 0.000 |
-| Avg $/PR | $0.0781 |
+| Avg $/PR | $0.0000 |
 
 ## Per-case
 | PR | Repo | Expected | Hits | Misses | Extras | $ |
 |---|---|---|---|---|---|---|
-| #87 | cjunks94/resume-improvements | 1 | 0 | 1 | 0 | $0.0546 |
-| #82 | cjunks94/resume-improvements | 0 | 0 | 0 | 0 | $0.0874 |
-| #68 | cjunks94/resume-improvements | 0 | 0 | 0 | 0 | $0.0220 |
-| #44 | cjunks94/panoptrain | 0 | 0 | 0 | 0 | $0.1349 |
-| #4 | cjunks94/hush-hush | 0 | 0 | 0 | 0 | $0.0897 |
-| #29 | cjunks94/agentic-portfolio | 1 | 0 | 1 | 0 | $0.2250 |
-| #25 | cjunks94/agentic-portfolio | 1 | 1 | 0 | 0 | $0.2095 |
-| #56 | cjunks94/panoptrain | 3 | 2 | 1 | 0 | $0.3103 |
-| #121 | cjunks94/exportee-rails | 3 | 0 | 3 | 0 | $0.1434 |
-| #101 | cjunks94/exportee-rails | 2 | 0 | 2 | 0 | $0.0791 |
-| #28 | cjunks94/agentic-portfolio | 0 | 0 | 0 | 0 | $0.0405 |
-| #27 | cjunks94/agentic-portfolio | 0 | 0 | 0 | 0 | $0.0236 |
-| #59 | cjunks94/panoptrain | 2 | 1 | 1 | 0 | $0.1424 |
+| #87 | cjunks94/resume-improvements | 1 | 0 | 1 | 0 | $0.0000 |
+| #82 | cjunks94/resume-improvements | 0 | 0 | 0 | 0 | $0.0000 |
+| #68 | cjunks94/resume-improvements | 0 | 0 | 0 | 0 | $0.0000 |
+| #44 | cjunks94/panoptrain | 0 | 0 | 0 | 0 | $0.0000 |
+| #4 | cjunks94/hush-hush | 0 | 0 | 0 | 0 | $0.0000 |
+| #29 | cjunks94/agentic-portfolio | 1 | 0 | 1 | 0 | $0.0000 |
+| #25 | cjunks94/agentic-portfolio | 1 | 0 | 1 | 0 | $0.0000 |
+| #56 | cjunks94/panoptrain | 3 | 0 | 3 | 0 | $0.0000 |
+| #121 | cjunks94/exportee-rails | 3 | 0 | 3 | 0 | $0.0000 |
+| #101 | cjunks94/exportee-rails | 2 | 0 | 2 | 0 | $0.0000 |
+| #28 | cjunks94/agentic-portfolio | 0 | 0 | 0 | 0 | $0.0000 |
+| #27 | cjunks94/agentic-portfolio | 0 | 0 | 0 | 0 | $0.0000 |
+| #59 | cjunks94/panoptrain | 2 | 0 | 2 | 0 | $0.0000 |
 | #54 | cjunks94/panoptrain | 2 | 0 | 2 | 0 | $0.0000 |
 | #117 | cjunks94/exportee-rails | 3 | 0 | 3 | 0 | $0.0000 |
 | #69 | cjunks94/resume-improvements | 0 | 0 | 0 | 0 | $0.0000 |
@@ -50,12 +50,12 @@ Matcher: file + line ±3, plus a label keyword in the body (18 of 18 labels carr
 - MISS `src/agentic_portfolio/web/api.py:589` [useful/security] _make_broker docstring documents demo_mode fail-safe contract but doesn't enforce it; future LiveBroker addition could bypass demo gate without a regression check
 
 ### #25 cjunks94/agentic-portfolio
-- HIT `src/agentic_portfolio/web/runs.py:82` [useful/correctness] try_start treats any persisted status == "running" as a live run with no staleness check, but the runner executes on a daemon thread — if the process is restarted or killed mid-run (deploy, SIGKILL), current_run.json stays "running" forever and both POST /api/run (409) and the cron callback will refuse to start any further run with no in-app recovery path. Consider aging out a "running" record whose started_at is older than a max-run-duration bound.
+- MISS `src/agentic_portfolio/web/runs.py:82` [critical/correctness] try_start refuses on status=="running" with no staleness/lease check; pre-PR mark_started overwrote unconditionally, so a process death mid-run (redeploy SIGTERM kills the daemon thread before mark_failed) now wedges both POST /api/run (409) and the weekly cron (skipped) permanently on the persistent volume
 
 ### #56 cjunks94/panoptrain
-- HIT `packages/client/src/lib/tafCurrentPeriod.ts:28` [useful/order-dependence] The comment says "latest base period whose start is at or before `now`", but the loop takes the last matching element in array order, not the one with the greatest timeFrom. TafReport.forecasts is documented as "in upstream order" with no sorting guarantee, so an out-of-order FM group would select the wrong active period; compare p.timeFrom against the current candidate instead of relying on array position.
-- HIT `packages/server/src/services/taf-poller.ts:75` [useful/correctness] parseVisibility falls through to `Number(visib)` for an empty string, and `Number("")` is 0, so a group with `"visib": ""` is parsed as 0 statute miles rather than null. The TAF fixture added in this PR contains `"visib":""` on several TEMPO/PROB groups, so this path is live; guard against an empty/whitespace-only string before the numeric coercion.
+- MISS `packages/client/src/lib/tafCurrentPeriod.ts:28` [useful/correctness] selection loop picks last in iteration order, not latest timeFrom — assumes upstream returns basePeriods sorted ascending
 - MISS `packages/server/src/services/taf-poller.ts:95` [critical/correctness] deriveCeiling matches raw-TAF token "VV" but the JSON feed encodes obscured sky as cover "OVX" with base null and the height in the sibling vertVis field; fixture has 3 such groups; ceilingFt is null in the LIFR fog case
+- MISS `packages/server/src/services/taf-poller.ts:74` [useful/correctness] Number("") is 0 and passes isFinite, so upstream's empty-string visib (present on 5 overlay groups in the fixture) parses to 0 sm instead of the documented null; needs an explicit blank check before the numeric fallthrough
 
 ### #121 cjunks94/exportee-rails
 - MISS `app/services/sources/salesforce_adapter.rb:45` [useful/perf] extract accumulates entire SOQL result in memory; a multi-million-row Account export would OOM the worker
@@ -67,7 +67,7 @@ Matcher: file + line ±3, plus a label keyword in the body (18 of 18 labels carr
 - MISS `app/controllers/api/v1/base_controller.rb:13` [useful/correctness] rescuing ArgumentError globally converts programmer errors (wrong arity, Integer('x'), Pagy overflow) into client-facing 400s and hides real bugs from error tracking; rescue the specific enum-assignment case instead
 
 ### #59 cjunks94/panoptrain
-- HIT `packages/client/src/lib/scheduleIdle.ts:18` [useful/perf] The non-idle fallback ignores `timeoutMs` entirely and always fires at ~1ms, so on browsers without requestIdleCallback the App.tsx preload (called with 1500) kicks off multi-MB routes/stops fetches immediately during first paint — exactly the contention the caller's comment says it defers. Consider having the fallback use the provided timeout (or a fraction of it) as the setTimeout delay.
+- MISS `packages/client/src/lib/scheduleIdle.ts:18` [useful/correctness] setTimeout fallback hardcodes 1ms and ignores the timeoutMs parameter; docstring promises 'soon-ish' upper bound but fallback fires next tick regardless of caller intent
 - MISS `packages/client/src/App.tsx:113` [useful/performance] no in-flight dedup between the idle preload and useRouteShapes; switching modes while the preload is downloading triggers a second parallel multi-MB fetch and the preload result is discarded
 
 ### #54 cjunks94/panoptrain
