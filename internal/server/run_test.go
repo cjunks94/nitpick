@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -81,7 +82,7 @@ func TestServe_ShutdownErrorDoesNotSkipDrain(t *testing.T) {
 	}
 	srv := newHTTPServer(ln.Addr().String(), mux)
 
-	var logs bytes.Buffer
+	var logs syncBuffer // serve logs from its own goroutine while the test reads
 	logger := slog.New(slog.NewJSONHandler(&logs, nil))
 	ctx, cancel := context.WithCancel(context.Background())
 	served := make(chan error, 1)
@@ -191,4 +192,24 @@ func TestServe_ListenerErrorIsReturned(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("serve did not return after its listener was closed")
 	}
+}
+
+// syncBuffer is a bytes.Buffer safe to read while another goroutine logs
+// into it. The race detector flagged the plain buffer here (CI run
+// 34377370471): serve() writes from its goroutine while the test asserts.
+type syncBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
 }
