@@ -32,7 +32,7 @@ func TestFetchFile_500DoesNotWrapErrFileNotFound(t *testing.T) {
 		_, _ = w.Write([]byte("upstream exploded"))
 	}))
 	defer srv.Close()
-	client := &HTTPClient{BaseURL: srv.URL, Token: "test", HTTPClient: srv.Client()}
+	client := &HTTPClient{BaseURL: srv.URL, Token: "test", HTTPClient: srv.Client(), MaxAttempts: 1}
 
 	_, err := client.FetchFile(context.Background(), "owner/repo", "abc", ".nitpick.yaml")
 	if err == nil {
