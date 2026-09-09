@@ -151,21 +151,37 @@ func TestCommentTrigger_ShedOnFullQueueReleasesCooldown(t *testing.T) {
 
 // goReview owns the panic guard, so an async path that forgets its own
 // recover cannot take the process down, and the slot it held is returned.
+// Every concurrency slot is filled with panicking work first: if a panic
+// leaked its slot, the follow-up would block on the semaphore forever.
+// No Drain in between, since Drain cancels the base context and a later
+// goReview would legitimately abandon its work.
 func TestGoReview_RecoversPanicAndReleasesSlot(t *testing.T) {
 	h := minimalHandler("s")
-	if !h.goReview(silentLogger(), func(ctx context.Context) { panic("boom") }) {
-		t.Fatal("goReview rejected work on an empty queue")
+	entered := make(chan struct{}, defaultMaxConcurrentReviews)
+	for i := 0; i < defaultMaxConcurrentReviews; i++ {
+		if !h.goReview(silentLogger(), func(ctx context.Context) {
+			entered <- struct{}{}
+			panic("boom")
+		}) {
+			t.Fatalf("goReview rejected work %d on an empty queue", i)
+		}
 	}
-	h.Drain(5 * time.Second)
+	for i := 0; i < defaultMaxConcurrentReviews; i++ {
+		select {
+		case <-entered:
+		case <-time.After(2 * time.Second):
+			t.Fatal("panicking work never started")
+		}
+	}
 
 	ran := make(chan struct{})
 	if !h.goReview(silentLogger(), func(ctx context.Context) { close(ran) }) {
-		t.Fatal("goReview rejected work after a recovered panic")
+		t.Fatal("goReview rejected work after recovered panics")
 	}
 	select {
 	case <-ran:
 	case <-time.After(2 * time.Second):
-		t.Fatal("work after a recovered panic never ran: slot or queue count leaked")
+		t.Fatal("work after recovered panics never ran: a slot or the queue count leaked")
 	}
 	h.Drain(5 * time.Second)
 }
