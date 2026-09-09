@@ -1,6 +1,6 @@
 # Eval report — `anthropic-claude-opus-5`
 
-Cases: 20  ·  Expected findings: 18  ·  Produced: 0
+Cases: 20  ·  Expected findings: 18  ·  Produced: 4
 
 Input: review.Prepare, the production pipeline (secrets redacted line for line; no repo config, so no ignore_paths or escalation)
 
@@ -10,36 +10,36 @@ Matcher: file + line ±3, plus a label keyword in the body (18 of 18 labels carr
 
 | Metric | Value |
 |---|---|
-| Precision | 0.000 |
-| Recall (all) | 0.000 |
+| Precision | 1.000 |
+| Recall (all) | 0.222 |
 | Recall (critical) | 0.000 |
-| Recall (useful) | 0.000 |
+| Recall (useful) | 0.333 |
 | Noise rate | 0.000 |
-| Avg $/PR | $0.0000 |
+| Avg $/PR | $0.1076 |
 
 ## Per-case
 | PR | Repo | Expected | Hits | Misses | Extras | $ |
 |---|---|---|---|---|---|---|
 | #87 | cjunks94/resume-improvements | 1 | 0 | 1 | 0 | $0.0000 |
-| #82 | cjunks94/resume-improvements | 0 | 0 | 0 | 0 | $0.0000 |
-| #68 | cjunks94/resume-improvements | 0 | 0 | 0 | 0 | $0.0000 |
-| #44 | cjunks94/panoptrain | 0 | 0 | 0 | 0 | $0.0000 |
-| #4 | cjunks94/hush-hush | 0 | 0 | 0 | 0 | $0.0000 |
-| #29 | cjunks94/agentic-portfolio | 1 | 0 | 1 | 0 | $0.0000 |
-| #25 | cjunks94/agentic-portfolio | 1 | 0 | 1 | 0 | $0.0000 |
-| #56 | cjunks94/panoptrain | 3 | 0 | 3 | 0 | $0.0000 |
-| #121 | cjunks94/exportee-rails | 3 | 0 | 3 | 0 | $0.0000 |
-| #101 | cjunks94/exportee-rails | 2 | 0 | 2 | 0 | $0.0000 |
-| #28 | cjunks94/agentic-portfolio | 0 | 0 | 0 | 0 | $0.0000 |
-| #27 | cjunks94/agentic-portfolio | 0 | 0 | 0 | 0 | $0.0000 |
-| #59 | cjunks94/panoptrain | 2 | 0 | 2 | 0 | $0.0000 |
-| #54 | cjunks94/panoptrain | 2 | 0 | 2 | 0 | $0.0000 |
-| #117 | cjunks94/exportee-rails | 3 | 0 | 3 | 0 | $0.0000 |
-| #69 | cjunks94/resume-improvements | 0 | 0 | 0 | 0 | $0.0000 |
-| #64 | cjunks94/resume-improvements | 0 | 0 | 0 | 0 | $0.0000 |
-| #57 | cjunks94/resume-improvements | 0 | 0 | 0 | 0 | $0.0000 |
-| #10 | cjunks94/hush-hush | 0 | 0 | 0 | 0 | $0.0000 |
-| #9 | cjunks94/hush-hush | 0 | 0 | 0 | 0 | $0.0000 |
+| #82 | cjunks94/resume-improvements | 0 | 0 | 0 | 0 | $0.0872 |
+| #68 | cjunks94/resume-improvements | 0 | 0 | 0 | 0 | $0.0231 |
+| #44 | cjunks94/panoptrain | 0 | 0 | 0 | 0 | $0.1306 |
+| #4 | cjunks94/hush-hush | 0 | 0 | 0 | 0 | $0.0919 |
+| #29 | cjunks94/agentic-portfolio | 1 | 0 | 1 | 0 | $0.2163 |
+| #25 | cjunks94/agentic-portfolio | 1 | 0 | 1 | 0 | $0.2225 |
+| #56 | cjunks94/panoptrain | 3 | 2 | 1 | 0 | $0.3150 |
+| #121 | cjunks94/exportee-rails | 3 | 2 | 1 | 0 | $0.1397 |
+| #101 | cjunks94/exportee-rails | 2 | 0 | 2 | 0 | $0.0837 |
+| #28 | cjunks94/agentic-portfolio | 0 | 0 | 0 | 0 | $0.0405 |
+| #27 | cjunks94/agentic-portfolio | 0 | 0 | 0 | 0 | $0.0236 |
+| #59 | cjunks94/panoptrain | 2 | 0 | 2 | 0 | $0.1757 |
+| #54 | cjunks94/panoptrain | 2 | 0 | 2 | 0 | $0.2032 |
+| #117 | cjunks94/exportee-rails | 3 | 0 | 3 | 0 | $0.1528 |
+| #69 | cjunks94/resume-improvements | 0 | 0 | 0 | 0 | $0.1489 |
+| #64 | cjunks94/resume-improvements | 0 | 0 | 0 | 0 | $0.0485 |
+| #57 | cjunks94/resume-improvements | 0 | 0 | 0 | 0 | $0.0204 |
+| #10 | cjunks94/hush-hush | 0 | 0 | 0 | 0 | $0.0183 |
+| #9 | cjunks94/hush-hush | 0 | 0 | 0 | 0 | $0.0109 |
 
 ## Detail
 
@@ -53,14 +53,14 @@ Matcher: file + line ±3, plus a label keyword in the body (18 of 18 labels carr
 - MISS `src/agentic_portfolio/web/runs.py:82` [critical/correctness] try_start refuses on status=="running" with no staleness/lease check; pre-PR mark_started overwrote unconditionally, so a process death mid-run (redeploy SIGTERM kills the daemon thread before mark_failed) now wedges both POST /api/run (409) and the weekly cron (skipped) permanently on the persistent volume
 
 ### #56 cjunks94/panoptrain
-- MISS `packages/client/src/lib/tafCurrentPeriod.ts:28` [useful/correctness] selection loop picks last in iteration order, not latest timeFrom — assumes upstream returns basePeriods sorted ascending
+- HIT `packages/client/src/lib/tafCurrentPeriod.ts:28` [useful/order-dependent logic] The comment says "latest base period whose start is at or before now", but the loop assigns the last array element satisfying timeFrom <= now, which only equals the latest start if forecasts are sorted ascending — and TafReport documents them as "in upstream order" with no sort guarantee (the same concern deriveCeiling explicitly defends against for cloud layers). Track the candidate with the maximum timeFrom instead of relying on array order.
+- HIT `packages/server/src/services/taf-poller.ts:74` [useful/correctness] parseVisibility falls through to Number(visib) for empty strings — Number("") is 0 and passes Number.isFinite, so a period with visib:"" is reported as 0 sm visibility instead of null. The new e2e fixture contains several groups with "visib":"" (KTEB TEMPO, PROB groups), so guard against an empty/whitespace-only string before the numeric coercion.
 - MISS `packages/server/src/services/taf-poller.ts:95` [critical/correctness] deriveCeiling matches raw-TAF token "VV" but the JSON feed encodes obscured sky as cover "OVX" with base null and the height in the sibling vertVis field; fixture has 3 such groups; ceilingFt is null in the LIFR fog case
-- MISS `packages/server/src/services/taf-poller.ts:74` [useful/correctness] Number("") is 0 and passes isFinite, so upstream's empty-string visib (present on 5 overlay groups in the fixture) parses to 0 sm instead of the documented null; needs an explicit blank check before the numeric fallthrough
 
 ### #121 cjunks94/exportee-rails
+- HIT `app/services/sources/salesforce_adapter.rb:66` [useful/contract drift] The docstring says api_version is optional and "defaults to Restforce default", but passing `api_version: config.fetch("api_version", nil)` explicitly overrides Restforce's configured default with nil when the key is absent, which can produce malformed API paths. Only include the api_version key when it is present in config.
+- HIT `app/services/sources/salesforce_adapter.rb:27` [useful/performance] introspect_schema issues one describe HTTP call per queryable sobject; a real Salesforce org commonly exposes hundreds of queryable objects, so this is an N+1 round-trip pattern that will be slow and can exhaust the org's API request limits. Consider limiting to selected objects or using a composite/batched describe.
 - MISS `app/services/sources/salesforce_adapter.rb:45` [useful/perf] extract accumulates entire SOQL result in memory; a multi-million-row Account export would OOM the worker
-- MISS `app/services/sources/salesforce_adapter.rb:66` [critical/correctness] explicit api_version: nil overrides Restforce's default in its options merge (concerns/base.rb merge!), so a connection that omits the documented-optional key hits /services/data/v/... and 404s on every call; specs stub Restforce.new so they can't see it
-- MISS `app/services/sources/salesforce_adapter.rb:27` [useful/perf] introspect_schema describes every queryable sobject in a sequential loop: hundreds of HTTP calls per introspection on a stock org, eating the daily API allocation; batch via composite describe or describe lazily
 
 ### #101 cjunks94/exportee-rails
 - MISS `app/controllers/api/v1/base_controller.rb:83` [useful/security] bad_request_with_message renders raw exception.message from ArgumentError; risks leaking internal context (CLAUDE.md: error messages must not leak internal details)
