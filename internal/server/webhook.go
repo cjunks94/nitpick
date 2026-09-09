@@ -929,15 +929,6 @@ func (h *Handler) claimDedup(key string) (release func(), ok bool) {
 	}, true
 }
 
-// reviewPR runs the actual LLM review and posts the result. Errors are logged
-// rather than propagated — there's no caller waiting on us. A 30s ceiling
-// guards against runaway calls; the Anthropic SDK's internal timeout is 30s
-// too, so this is a hard backstop.
-//
-// Takes its inputs as plain params (not a pullRequestEvent) so both the
-// pull_request webhook and the /nitpick comment trigger can call it with the
-// same signature. Dedup happens in the caller, not here — comment triggers
-// bypass dedup because the user is explicitly asking for a fresh review.
 // reviewTarget is everything reviewPR needs to identify and safely scope a
 // review. Carried as a struct so the pull_request webhook and the /nitpick
 // comment trigger populate the same fields from their different payloads.
@@ -971,6 +962,16 @@ type reviewTarget struct {
 // successful wait into a guaranteed timeout.
 const reviewPhaseBudget = 90 * time.Second
 
+// reviewPR runs the actual LLM review and posts the result. Errors are logged
+// rather than propagated — there's no caller waiting on us. Each working
+// phase (setup, then review) runs under its own reviewPhaseBudget of 90s as
+// a hard backstop against runaway calls; the optional CodeRabbit wait between
+// them has a separate budget (maxCodeRabbitWaitTimeout + reviewPhaseBudget).
+//
+// Takes a reviewTarget (not a pullRequestEvent) so both the pull_request
+// webhook and the /nitpick comment trigger can call it with the same
+// signature. Dedup happens in the caller, not here — comment triggers bypass
+// dedup because the user is explicitly asking for a fresh review.
 func (h *Handler) reviewPR(parent context.Context, log *slog.Logger, t reviewTarget) {
 	// See reviewTarget.release: called on every exit before the provider is
 	// invoked, never after.

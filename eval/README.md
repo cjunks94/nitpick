@@ -4,9 +4,11 @@ The harness that turns this from "wrote an LLM wrapper" into engineering.
 
 ## How it works
 
-1. `cases/cases.jsonl` — one JSON object per line, each pointing at a labeled PR.
-2. Each case points at a `.diff` file and a list of expected findings (file, line, severity).
+1. `cases/cases.jsonl` — one JSON object per line, each pointing at a labeled PR. Lines starting with `//` are comments and blank lines are skipped.
+2. Each case points at a `.diff` file and a list of expected findings (file, line, severity, keywords).
 3. `nitpick eval --provider <name>` loads cases, runs the provider against each diff, matches results to expected findings, and writes `REPORT.md`.
+
+Flags: `--provider stub|anthropic` (default stub), `--model <id>` to override the provider's default, `--cases <path>` (default `eval/cases/cases.jsonl`), `--out <path>` (default `eval/REPORT.md`), and `--guidelines` to inject a per-repo CLAUDE.md as cached context. `--guidelines` looks for `eval/cases/repos/<owner>__<repo>.md` (the `/` in the repo name becomes `__`); those files are real CLAUDE.md copies from the labeled repos and are the opt-in context for an experiment that A/B'd as no-win — keep them, don't delete them.
 
 ## Labeling methodology
 
@@ -35,12 +37,13 @@ Mix the 20 across:
 ## Case format
 
 ```jsonl
-{"pr":87,"repo":"cjunks94/resume-improvements","diff_path":"eval/cases/pr-87.diff","expected":[{"file":"particle-scene.js","line":67,"severity":"useful","category":"defensive","note":"missing hsl/hsla in isLightBg parser"}]}
+// Comment lines start with // and are ignored; so are blank lines.
+{"pr":87,"repo":"cjunks94/resume-improvements","diff_path":"eval/cases/pr-87.diff","expected":[{"file":"particle-scene.js","line":65,"severity":"useful","category":"defensive","keywords":["hsl"],"note":"isLightBg parses hex and rgb()/rgba() but not hsl()/hsla()"}]}
 ```
 
 Severity is `critical` / `useful`. A case with no expected findings is also valid — it grades the bot on staying silent.
 
-`line` is the new-file line number (matches what `gh pr diff` shows after the `+`).
+`line` is the new-file line number (matches what `gh pr diff` shows after the `+`). `keywords` is the one or two words the real finding cannot be stated without (see "Matching algorithm"). `note` is for humans; it is printed next to every HIT / MISS in the report's Detail section.
 
 ## Matching algorithm
 
@@ -63,6 +66,8 @@ The keyword rule exists because file+line alone once scored a different complain
 | Recall (useful) | useful_hits / useful_total | The quality differentiator vs. CodeRabbit |
 | Noise rate | extras / produced | <30% target; CodeRabbit at default sits ~40–50% |
 | Avg $/PR | total cost / cases | The cost story for the resume bullet |
+
+The header states which matcher scored the run and how many labels carry keywords. Below the per-case table, a `## Detail` section lists every HIT, MISS, and EXTRA per case with the comment body the model actually produced — read it before trusting a recall number that moved by one finding, because with 18 labels one finding is ~0.06 of recall.
 
 ## Cadence
 

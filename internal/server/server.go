@@ -26,9 +26,12 @@ type Config struct {
 }
 
 // Run starts the HTTP server, blocks until SIGTERM/SIGINT, then gracefully
-// shuts down with a 30s grace window. Per the project CLAUDE.md, Railway
-// sends SIGTERM before SIGKILL on redeploy — wiring the signal handler is
-// load-bearing or in-flight reviews are lost on every deploy.
+// shuts down in two steps: httpShutdownGrace (10s) for open HTTP
+// connections, then reviewDrainGrace (45s) for detached review goroutines.
+// Per the project CLAUDE.md, Railway sends SIGTERM before SIGKILL on
+// redeploy — wiring the signal handler is load-bearing or in-flight reviews
+// are lost on every deploy, and the platform's draining window must cover
+// both steps (60s) or the drain never gets to run.
 func Run(cfg Config) error {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 

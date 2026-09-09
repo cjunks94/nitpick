@@ -16,7 +16,9 @@ go build ./...
 go test ./...
 go vet ./...
 ```
-All three should be green before any commit. CI doesn't exist yet (open work — see HANDOFF).
+All three should be green before any commit.
+
+CI is `.github/workflows/security.yml`, which runs on every push to `main`, every pull request (no branch filter, so stacked PRs get checks too), and a Monday 06:00 UTC cron. Four jobs: **build** (`go mod verify`, `go build`, `go vet`, `go test -race -coverprofile` with a Codecov upload that does not fail the run), **govulncheck**, **gosec** (`-severity medium`), and **gitleaks** (skipped on Dependabot PRs). `-race` runs only there — it needs cgo, which the Windows dev box does not have — so a data race in `internal/server` shows up in CI before it shows up locally. `.github/dependabot.yml` opens weekly grouped PRs for gomod and github-actions.
 
 ### Prompt changes are eval-gated
 
@@ -42,7 +44,7 @@ This is the *one* place we don't skip the measurement loop. Vibes-tuning a promp
 
 ## Architecture in one paragraph
 
-`cmd/{review,eval,serve}.go` are the three subcommands. `internal/provider/` owns the LLM call (stub or Anthropic). `internal/prompt/` is the system prompt, versioned in comments. `internal/diff/` parses unified diffs into hunks (used by all three subcommands). `internal/eval/` replays labeled cases against a provider and writes `REPORT.md`. `internal/ghc/` is split: `pr.go` + `comments.go` shell to `gh` CLI (used by local `review`); `httpclient.go` uses installation tokens via raw HTTP (used by `serve`). Body construction is shared via `BuildReviewBody`. `internal/server/` is the webhook server. `internal/ghapp/` handles App JWT + installation token caching.
+`cmd/{review,eval,serve}.go` are the three subcommands. `internal/provider/` owns the LLM call (stub or Anthropic). `internal/prompt/` is the system prompt, versioned in comments. `internal/diff/` parses unified diffs into hunks (used by all three subcommands). `internal/config/` loads `.nitpick.yaml` (`ignore_paths`, `escalate`, `coderabbit`, `context_notes`) and owns the doublestar matcher (`match.go`) both surfaces use for paths. `internal/secrets/` is the redactor every diff, context file, and `context_notes` block passes through before leaving the process. `internal/eval/` replays labeled cases against a provider and writes `REPORT.md`. `internal/ghc/` is split: `pr.go` + `comments.go` shell to `gh` CLI (used by local `review`); `httpclient.go` uses installation tokens via raw HTTP (used by `serve`). Body construction is shared via `BuildReviewBody`. `internal/server/` is the webhook server. `internal/ghapp/` handles App JWT + installation token caching.
 
 ## Things known to be load-bearing
 
@@ -60,7 +62,7 @@ This is the *one* place we don't skip the measurement loop. Vibes-tuning a promp
 
 ## Conventions
 
-- Conventional Commits with the project scope vocabulary (see parent CLAUDE.md: `crm`, `payments`, `sync`, `api`, etc., plus cross-cutting `deps`, `ci`, `security`, `test`, `infra`). For this repo, additionally: `eval`, `prompt`, `serve`, `ghc`, `ghapp`.
+- Conventional Commits with the project scope vocabulary (see parent CLAUDE.md: `crm`, `payments`, `sync`, `api`, etc., plus cross-cutting `deps`, `ci`, `security`, `test`, `infra`). For this repo, additionally: `eval`, `prompt`, `serve`, `ghc`, `ghapp`, `diff`, `provider`, `config`, and `handoff` (edits to `HANDOFF.md`); the cross-cutting `ci` and `security` are used as-is (`fix(ci)`, `fix(security)`).
 - Squash-merge PRs (linear history).
 - Co-Authored-By trailer on commits made with LLM assistance.
 - Tests live next to the code (`foo_test.go` next to `foo.go`).
@@ -69,7 +71,7 @@ This is the *one* place we don't skip the measurement loop. Vibes-tuning a promp
 
 ## What's *not* here yet (don't be surprised by absence)
 
-- No CI workflows (`.github/workflows/`). Local `go test` is the gate today.
+- No coverage threshold. CI uploads to Codecov with `fail_ci_if_error: false` and there is no `codecov.yml`; nothing fails below the parent's 80% target. Whether `main` *requires* the `security` checks to merge is a GitHub ruleset setting, not something in the repo — don't assume it from this file.
 - No persistence — `serve` dedup is in-memory.
 - No retry logic on the LLM provider (the SDK has its own).
 - No metrics endpoint — Railway logs are the observability story for now.

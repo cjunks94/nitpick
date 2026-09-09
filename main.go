@@ -55,13 +55,13 @@ Usage:
 Review flags:
   --pr        PR number (required)
   --repo      owner/name (defaults to repo detected by gh)
-  --provider  stub | deepseek | anthropic   (default: stub)
+  --provider  stub | anthropic   (default: stub)
   --config    path to .nitpick.yaml (default: ./.nitpick.yaml)
   --dry-run   print findings to stdout instead of posting
 
 Eval flags:
   --cases       path to cases.jsonl (default: eval/cases/cases.jsonl)
-  --provider    stub | deepseek | anthropic   (default: stub)
+  --provider    stub | anthropic   (default: stub)
   --model       override the provider's default model
   --out         path to REPORT.md  (default: eval/REPORT.md)
   --guidelines  inject per-repo CLAUDE.md as cached context (off by default)

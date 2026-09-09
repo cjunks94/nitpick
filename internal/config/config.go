@@ -13,16 +13,21 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// Config is the parsed .nitpick.yaml. yaml.v3 ignores unknown keys, so a
+// file that still carries the removed `provider`, `severity_threshold`, or
+// `categories_enabled` keys loads fine; they were parsed and never read.
 type Config struct {
-	Provider string       `yaml:"provider"`
-	Model    string       `yaml:"model"`
-	Review   ReviewConfig `yaml:"review"`
+	// Model is the default model id. Honored by the `review` CLI. `serve`
+	// takes its default from NITPICK_MODEL and reads only Review.Escalate
+	// from this file (see server.selectProvider).
+	Model  string       `yaml:"model"`
+	Review ReviewConfig `yaml:"review"`
 }
 
 type ReviewConfig struct {
-	SeverityThreshold string   `yaml:"severity_threshold"`
-	IgnorePaths       []string `yaml:"ignore_paths"`
-	CategoriesEnabled []string `yaml:"categories_enabled"`
+	// IgnorePaths are doublestar patterns; matching files are dropped from
+	// the diff before review. Validated at parse time.
+	IgnorePaths []string `yaml:"ignore_paths"`
 	// CodeRabbit configures interop with CodeRabbit, which many repos run
 	// alongside nitpick. See CodeRabbitConfig.
 	CodeRabbit CodeRabbitConfig `yaml:"coderabbit"`
@@ -130,8 +135,10 @@ func (c Config) ModelFor(files []string) (model, matched string) {
 // CodeRabbit actually said. This config turns that into real per-PR knowledge.
 type CodeRabbitConfig struct {
 	// Enabled fetches CodeRabbit's existing comments on the PR and shows them
-	// to the reviewer as already-covered ground. Default true; it costs one
-	// GitHub call and reliably reduces duplicate findings.
+	// to the reviewer as already-covered ground. Default true; it costs two
+	// GitHub calls (inline review comments + top-level issue comments, more
+	// on PRs with enough comments to paginate) and reliably reduces
+	// duplicate findings.
 	Enabled *bool `yaml:"enabled"`
 
 	// Bots are the logins treated as CodeRabbit. Configurable because
@@ -215,11 +222,9 @@ func (d Duration) Or(def time.Duration) time.Duration {
 	return time.Duration(d)
 }
 
+// defaults is the zero config: every field empty, so the provider's own
+// model default applies and CodeRabbit dedup stays on (see
+// CodeRabbitConfig.IsEnabled).
 func defaults() Config {
-	return Config{
-		Provider: "stub",
-		Review: ReviewConfig{
-			SeverityThreshold: "nit",
-		},
-	}
+	return Config{}
 }
