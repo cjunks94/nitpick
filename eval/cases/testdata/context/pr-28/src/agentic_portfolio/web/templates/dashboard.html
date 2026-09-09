@@ -1,0 +1,116 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="header">
+    <div class="title">AGENTIC PORTFOLIO &nbsp;//&nbsp; PAPER</div>
+    <div class="clock" id="clock">
+        <form id="custom-run-form" onsubmit="event.preventDefault(); analyzeCustomTicker();" style="display: inline-flex; gap: 6px; margin-right: 16px; align-items: center;">
+            <input id="custom-ticker-input"
+                   placeholder="TICKER"
+                   maxlength="12"
+                   aria-label="Ticker symbol to analyze"
+                   style="background: var(--bg); border: 1px solid var(--border); color: var(--amber); padding: 3px 8px; font-family: inherit; font-size: 11px; letter-spacing: 0.1em; width: 90px; text-transform: uppercase;">
+            <button class="run-now" type="submit" style="padding: 4px 10px;">ANALYZE</button>
+            <span id="custom-run-status" role="status" aria-live="polite" style="color: var(--text-dim); font-size: 11px;"></span>
+        </form>
+        <a href="/api/run/summary.md" class="detail-link" style="margin-right: 12px;">DOWNLOAD SUMMARY ↓</a>
+        {{ now }}
+    </div>
+</div>
+<script>
+async function analyzeCustomTicker() {
+    const input = document.getElementById('custom-ticker-input');
+    const statusEl = document.getElementById('custom-run-status');
+    const ticker = input.value.trim().toUpperCase();
+    if (!ticker) return;
+    statusEl.textContent = 'queueing...';
+    try {
+        const res = await fetch('/api/run', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({tickers: [ticker]}),
+            credentials: 'same-origin',
+        });
+        if (res.ok) {
+            statusEl.textContent = `queued ${ticker}`;
+            input.value = '';
+        } else {
+            const body = await res.json().catch(() => ({}));
+            statusEl.textContent = body.detail || `error ${res.status}`;
+        }
+    } catch (err) {
+        statusEl.textContent = 'network error';
+    }
+    setTimeout(() => { statusEl.textContent = ''; }, 4000);
+}
+</script>
+
+<div class="panel">
+    <div class="panel-title">PENDING ORDERS &nbsp;<span style="color: var(--text-dim);">— APPROVE TO EXECUTE</span></div>
+    <div class="panel-body" id="pending-panel-body" hx-get="/fragment/pending" hx-trigger="every 5s" hx-swap="innerHTML">
+        {% include "_pending.html" %}
+    </div>
+</div>
+
+<div hx-get="/fragment/summary" hx-trigger="every 10s" hx-swap="outerHTML">
+    {% include "_summary.html" %}
+</div>
+
+<div class="panel">
+    <div class="panel-title">POSITIONS</div>
+    <div class="panel-body" hx-get="/fragment/positions" hx-trigger="every 10s" hx-swap="innerHTML">
+        {% include "_positions.html" %}
+    </div>
+</div>
+
+<div class="panel">
+    <div class="panel-title">EQUITY CURVE &nbsp;<span style="color: var(--text-dim);">— PORTFOLIO VS SPY OVER TIME</span></div>
+    <div class="panel-body" id="equity-curve-panel-body" hx-get="/fragment/equity-curve" hx-trigger="every 60s" hx-swap="innerHTML">
+        {% include "_equity_curve.html" %}
+    </div>
+</div>
+
+<div class="panel">
+    <div class="panel-title">VS SPY &nbsp;<span style="color: var(--text-dim);">— BUY-AND-HOLD ATTRIBUTION</span></div>
+    <div class="panel-body" id="attribution-panel-body" hx-get="/fragment/attribution" hx-trigger="every 30s" hx-swap="innerHTML">
+        {% include "_attribution.html" %}
+    </div>
+</div>
+
+<div class="panel">
+    <div class="panel-title">RECENT ORDERS</div>
+    <div class="panel-body" hx-get="/fragment/orders" hx-trigger="every 10s" hx-swap="innerHTML">
+        {% include "_orders.html" %}
+    </div>
+</div>
+
+<div class="panel">
+    <div class="panel-title">DECISIONS</div>
+    <div class="panel-body" hx-get="/fragment/decisions" hx-trigger="every 10s" hx-swap="innerHTML">
+        {% include "_decisions.html" %}
+    </div>
+</div>
+
+<div class="panel-grid-3">
+    <div class="panel">
+        <div class="panel-title">RUN PROGRESS &nbsp;<span style="color: var(--text-dim);">— LIVE QUEUE & CANCEL</span></div>
+        <div class="panel-body" id="progress-panel-body" hx-get="/fragment/progress" hx-trigger="every 3s" hx-swap="innerHTML">
+            {% include "_progress.html" %}
+        </div>
+    </div>
+
+    <div class="panel">
+        <div class="panel-title">WATCHLIST &nbsp;<span style="color: var(--text-dim);">— TICKERS THE WEEKLY CRON ANALYZES</span></div>
+        <div class="panel-body" id="watchlist-panel-body" hx-get="/fragment/watchlist" hx-trigger="every 30s" hx-swap="innerHTML">
+            {% include "_watchlist.html" %}
+        </div>
+    </div>
+
+    <div class="panel">
+        <div class="panel-title">SYSTEM</div>
+        <div class="panel-body" hx-get="/fragment/system" hx-trigger="every 5s" hx-swap="innerHTML">
+            {% include "_system.html" %}
+        </div>
+    </div>
+</div>
+{% endblock %}
