@@ -562,9 +562,6 @@ func TestConfigRef_ForkReadsBaseBranch(t *testing.T) {
 	}
 }
 
-// Suppress unused-import warnings if the file becomes the only one using these.
-var _ atomic.Int32
-
 // The authorization gate must be ON for a Handler built as a struct literal.
 //
 // The field is phrased as an opt-OUT precisely so the zero value is safe. The
