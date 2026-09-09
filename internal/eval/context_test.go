@@ -105,7 +105,9 @@ func TestLoadContext_RejectsTraversal(t *testing.T) {
 
 func TestSafeJoin(t *testing.T) {
 	dir := t.TempDir()
-	for _, bad := range []string{"", "../x", "a/../../x", "/etc/passwd", "C:/x"} {
+	// A drive-letter path is only absolute on Windows; on Linux "C:/x" is a
+	// plain relative name, so it is not in this list.
+	for _, bad := range []string{"", "../x", "a/../../x", "/etc/passwd"} {
 		if _, err := safeJoin(dir, bad); err == nil {
 			t.Errorf("safeJoin(%q) accepted a path that escapes the directory", bad)
 		}
