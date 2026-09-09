@@ -9,9 +9,9 @@ import (
 	"time"
 
 	"github.com/cjunks94/nitpick/internal/config"
-	"github.com/cjunks94/nitpick/internal/diff"
 	"github.com/cjunks94/nitpick/internal/ghc"
 	"github.com/cjunks94/nitpick/internal/provider"
+	"github.com/cjunks94/nitpick/internal/review"
 	"github.com/cjunks94/nitpick/internal/secrets"
 )
 
@@ -54,38 +54,25 @@ func Review(ctx context.Context, args []string) error {
 		return fmt.Errorf("fetch diff: %w", err)
 	}
 
-	hunks, err := diff.ParseUnifiedDiff(rawDiff)
+	// One pipeline with serve and the eval: parse, ignore_paths, redaction,
+	// and escalation on the files that remain.
+	prepared, err := review.Prepare(rawDiff, &cfg)
 	if err != nil {
-		return fmt.Errorf("parse diff: %w", err)
+		return err
 	}
-	if len(cfg.Review.IgnorePaths) > 0 {
-		before := len(hunks)
-		hunks = diff.FilterByPath(hunks, func(p string) bool {
-			return config.MatchAny(p, cfg.Review.IgnorePaths)
-		})
-		if d := before - len(hunks); d > 0 {
-			fmt.Fprintf(os.Stderr, "ignored %d hunk(s) by .nitpick.yaml ignore_paths\n", d)
-		}
+	hunks := prepared.Hunks
+	if prepared.IgnoredHunks > 0 {
+		fmt.Fprintf(os.Stderr, "ignored %d hunk(s) by .nitpick.yaml ignore_paths\n", prepared.IgnoredHunks)
 	}
-
-	// Same guard as the serve path: the diff goes to the provider verbatim,
-	// so credentials in it must be masked before the call. ignore_paths is
-	// opt-in and cannot be relied on as the only defence.
-	hunks, redactedLines, redactedFiles := secrets.SanitizeHunks(hunks)
-	if redactedLines > 0 {
+	if prepared.RedactedLines > 0 {
 		fmt.Fprintf(os.Stderr,
 			"nitpick: redacted %d line(s) across %d file(s) before sending to the provider\n",
-			redactedLines, redactedFiles)
+			prepared.RedactedLines, prepared.RedactedFiles)
 	}
-
-	// Model routing (review.escalate), decided on the post-ignore_paths file
-	// list exactly as the serve path does.
-	model := cfg.Model
-	if m, matched := cfg.ModelFor(diff.Files(hunks)); matched != "" {
-		fmt.Fprintf(os.Stderr, "nitpick: escalated to %s (matched review.escalate.paths on %s)\n", m, matched)
-		model = m
+	if prepared.EscalatedOn != "" {
+		fmt.Fprintf(os.Stderr, "nitpick: escalated to %s (matched review.escalate.paths on %s)\n", prepared.Model, prepared.EscalatedOn)
 	}
-	p, err := provider.New(*providerName, model)
+	p, err := provider.New(*providerName, prepared.Model)
 	if err != nil {
 		return err
 	}
@@ -107,17 +94,8 @@ func Review(ctx context.Context, args []string) error {
 			// ListPRComments returns inline comments before top-level ones,
 			// so a plain prefix cap keeps the half that actually overlaps —
 			// same rule as the serve path.
-			hits := ghc.FilterByAuthor(existing, crCfg.BotLogins())
-			dropped := 0
-			if len(hits) > provider.MaxPriorFindings {
-				dropped = len(hits) - provider.MaxPriorFindings
-				hits = hits[:provider.MaxPriorFindings]
-			}
-			for _, c := range hits {
-				priorFindings = append(priorFindings, provider.PriorFinding{
-					Author: c.Author, Path: c.Path, Line: c.Line, Body: c.Body,
-				})
-			}
+			var dropped int
+			priorFindings, dropped = ghc.ToPriorFindings(ghc.FilterByAuthor(existing, crCfg.BotLogins()), provider.MaxPriorFindings)
 			if len(priorFindings) > 0 {
 				fmt.Fprintf(os.Stderr, "dedup: %d existing CodeRabbit comment(s) shown to the reviewer (%d over cap dropped)\n",
 					len(priorFindings), dropped)

@@ -62,26 +62,8 @@ func fetchPriorFindings(
 	inlineHits := ghc.FilterByAuthor(inline, logins)
 	toplevelHits := ghc.FilterByAuthor(toplevel, logins)
 
-	// Inline first: a comment anchored to a diff line is far more likely to
-	// collide with one of nitpick's findings than a walkthrough summary is,
-	// so it should win the budget when we have to truncate.
-	out := make([]provider.PriorFinding, 0, len(inlineHits)+len(toplevelHits))
-	for _, c := range inlineHits {
-		out = append(out, provider.PriorFinding{
-			Author: c.Author, Path: c.Path, Line: c.Line, Body: c.Body,
-		})
-	}
-	for _, c := range toplevelHits {
-		out = append(out, provider.PriorFinding{
-			Author: c.Author, Body: c.Body,
-		})
-	}
-
-	dropped := 0
-	if len(out) > maxPriorFindingsInPrompt {
-		dropped = len(out) - maxPriorFindingsInPrompt
-		out = out[:maxPriorFindingsInPrompt]
-	}
+	// Inline first so anchored comments win the budget; see ToPriorFindings.
+	out, dropped := ghc.ToPriorFindings(append(inlineHits, toplevelHits...), maxPriorFindingsInPrompt)
 
 	log.Info("coderabbit comments loaded",
 		"inline", len(inlineHits),

@@ -44,13 +44,27 @@ func hunksFor(files ...string) []diff.Hunk {
 	return out
 }
 
+// resolved mirrors what review.Prepare hands selectProvider: the escalation
+// model and the file that matched, or "" when nothing did.
+func resolved(cfg *config.Config, files ...string) (model, matched string) {
+	if cfg == nil {
+		return "", ""
+	}
+	return cfg.ModelFor(diff.Files(hunksFor(files...)))
+}
+
+func selectFor(h *Handler, log *slog.Logger, cfg *config.Config, files ...string) provider.Provider {
+	model, matched := resolved(cfg, files...)
+	return h.selectProvider(log, model, matched)
+}
+
 func TestSelectProvider(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	def := namedProvider{"default"}
 
 	t.Run("no repo config uses default", func(t *testing.T) {
 		h := &Handler{Provider: def}
-		if got := h.selectProvider(log, nil, hunksFor("auth/x.go")); got != def {
+		if got := selectFor(h, log, nil, "auth/x.go"); got != def {
 			t.Fatalf("got %s, want default", got.Name())
 		}
 	})
@@ -60,7 +74,7 @@ func TestSelectProvider(t *testing.T) {
 			t.Fatal("factory must not be called when nothing matches")
 			return nil, nil
 		}}
-		if got := h.selectProvider(log, escalatingConfig(t), hunksFor("README.md", "web/app.js")); got != def {
+		if got := selectFor(h, log, escalatingConfig(t), "README.md", "web/app.js"); got != def {
 			t.Fatalf("got %s, want default", got.Name())
 		}
 	})
@@ -71,7 +85,7 @@ func TestSelectProvider(t *testing.T) {
 			asked = m
 			return namedProvider{"escalated"}, nil
 		}}
-		got := h.selectProvider(log, escalatingConfig(t), hunksFor("README.md", "migrations/1.sql"))
+		got := selectFor(h, log, escalatingConfig(t), "README.md", "migrations/1.sql")
 		if got.Name() != "escalated" {
 			t.Fatalf("got %s, want escalated", got.Name())
 		}
@@ -84,14 +98,14 @@ func TestSelectProvider(t *testing.T) {
 		h := &Handler{Provider: def, ProviderForModel: func(string) (provider.Provider, error) {
 			return nil, errors.New("unsupported model")
 		}}
-		if got := h.selectProvider(log, escalatingConfig(t), hunksFor("auth/x.go")); got != def {
+		if got := selectFor(h, log, escalatingConfig(t), "auth/x.go"); got != def {
 			t.Fatalf("got %s, want default", got.Name())
 		}
 	})
 
 	t.Run("no factory wired falls back to default", func(t *testing.T) {
 		h := &Handler{Provider: def}
-		if got := h.selectProvider(log, escalatingConfig(t), hunksFor("auth/x.go")); got != def {
+		if got := selectFor(h, log, escalatingConfig(t), "auth/x.go"); got != def {
 			t.Fatalf("got %s, want default", got.Name())
 		}
 	})
