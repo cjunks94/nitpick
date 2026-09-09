@@ -18,8 +18,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/cjunks94/nitpick/internal/diff"
 	"github.com/cjunks94/nitpick/internal/provider"
+	"github.com/cjunks94/nitpick/internal/review"
 )
 
 type Case struct {
@@ -68,10 +68,15 @@ func Run(ctx context.Context, casesPath, outPath string, p provider.Provider, lo
 		if err != nil {
 			return fmt.Errorf("read %s: %w", c.DiffPath, err)
 		}
-		hunks, err := diff.ParseUnifiedDiff(raw)
+		// The production pipeline minus ignore_paths (no repo config in the
+		// eval): the model sees redacted hunks here exactly as it does in
+		// serve and the CLI. The eval used to send fixtures unredacted, so
+		// the gate measured a different input than production sent.
+		prepared, err := review.Prepare(raw, nil)
 		if err != nil {
-			return fmt.Errorf("parse %s: %w", c.DiffPath, err)
+			return fmt.Errorf("prepare %s: %w", c.DiffPath, err)
 		}
+		hunks := prepared.Hunks
 		var guidelines []byte
 		if loadGuidelines {
 			guidelines, err = loadRepoGuidelines(reposDir, c.Repo)
@@ -233,6 +238,7 @@ func writeReport(out io.Writer, providerName string, results []CaseResult) error
 	fmt.Fprintf(w, "# Eval report — `%s`\n\n", providerName)
 	fmt.Fprintf(w, "Cases: %d  ·  Expected findings: %d  ·  Produced: %d\n\n",
 		len(results), totalExpected, totalProduced)
+	fmt.Fprintf(w, "Input: review.Prepare, the production pipeline (secrets redacted line for line; no repo config, so no ignore_paths or escalation)\n\n")
 	fmt.Fprintf(w, "Matcher: file + line ±3, plus a label keyword in the body (%d of %d labels carry keywords)\n\n",
 		totalKeyworded, totalExpected)
 	fmt.Fprintln(w, "| Metric | Value |")

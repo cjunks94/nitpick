@@ -20,6 +20,7 @@ import (
 	"github.com/cjunks94/nitpick/internal/diff"
 	"github.com/cjunks94/nitpick/internal/ghc"
 	"github.com/cjunks94/nitpick/internal/provider"
+	"github.com/cjunks94/nitpick/internal/review"
 	"github.com/cjunks94/nitpick/internal/secrets"
 )
 
@@ -867,25 +868,8 @@ func (h *Handler) handleCommentTriggerAsync(parent context.Context, log *slog.Lo
 	// Comment trigger respects draft / bot / size guards (they're cost
 	// controls, not idempotency) but bypasses the head-SHA dedup because
 	// the user is asking explicitly.
-	if pr.Draft {
-		log.Info("skip", "reason", "draft")
-		release()
-		return
-	}
-	for _, login := range h.SkipUserLogins {
-		if pr.UserLogin == login {
-			log.Info("skip", "reason", "user="+login)
-			release()
-			return
-		}
-	}
-	if pr.UserType == "Bot" && pr.UserLogin != "" {
-		log.Info("skip", "reason", "user_type=Bot")
-		release()
-		return
-	}
-	if total, limit := pr.Additions+pr.Deletions, h.maxLines(); total > limit {
-		log.Info("skip", "reason", fmt.Sprintf("size=%d>limit=%d", total, limit))
+	if reason, skip := h.skipReason(pr.Draft, pr.UserLogin, pr.UserType, pr.Additions, pr.Deletions); skip {
+		log.Info("skip", "reason", reason)
 		release()
 		return
 	}
@@ -901,6 +885,29 @@ func (h *Handler) handleCommentTriggerAsync(parent context.Context, log *slog.Lo
 	})
 }
 
+// skipReason applies the cost-control rules both the pull_request webhook
+// and the /nitpick trigger enforce: draft, a skip-listed login, any bot, and
+// the size limit. One implementation so the next rule cannot land on one
+// path and not the other.
+func (h *Handler) skipReason(draft bool, login, userType string, additions, deletions int) (string, bool) {
+	if draft {
+		return "draft", true
+	}
+	for _, l := range h.SkipUserLogins {
+		if login == l {
+			return "user=" + l, true
+		}
+	}
+	if userType == "Bot" && login != "" {
+		// Catches any other bot the user didn't enumerate.
+		return "user_type=Bot", true
+	}
+	if total, limit := additions+deletions, h.maxLines(); total > limit {
+		return fmt.Sprintf("size=%d>limit=%d", total, limit), true
+	}
+	return "", false
+}
+
 // shouldSkip returns true if the PR shouldn't be reviewed. Reasons are
 // returned for logging visibility.
 func (h *Handler) shouldSkip(pre *pullRequestEvent) (bool, string) {
@@ -910,20 +917,9 @@ func (h *Handler) shouldSkip(pre *pullRequestEvent) (bool, string) {
 	default:
 		return true, "action=" + pre.Action
 	}
-	if pre.PullRequest.Draft {
-		return true, "draft"
-	}
-	for _, login := range h.SkipUserLogins {
-		if pre.PullRequest.User.Login == login {
-			return true, "user=" + login
-		}
-	}
-	if pre.PullRequest.User.Type == "Bot" && pre.PullRequest.User.Login != "" {
-		// Catches any other bot the user didn't enumerate.
-		return true, "user_type=Bot"
-	}
-	if total, limit := pre.PullRequest.Additions+pre.PullRequest.Deletions, h.maxLines(); total > limit {
-		return true, fmt.Sprintf("size=%d>limit=%d", total, limit)
+	pr := pre.PullRequest
+	if reason, skip := h.skipReason(pr.Draft, pr.User.Login, pr.User.Type, pr.Additions, pr.Deletions); skip {
+		return true, reason
 	}
 	if pre.Installation.ID == 0 {
 		return true, "no installation id (App not installed on this repo?)"
@@ -1059,13 +1055,6 @@ func (h *Handler) reviewPR(parent context.Context, log *slog.Logger, t reviewTar
 		release()
 		return
 	}
-	hunks, err := diff.ParseUnifiedDiff(raw)
-	if err != nil {
-		log.Error("parse diff", "err", err)
-		release()
-		return
-	}
-
 	var repoCfg *config.Config
 	if ref := configRef(t); ref != "" {
 		repoCfg = fetchRepoConfig(ctx, log, client, repo, ref)
@@ -1073,50 +1062,45 @@ func (h *Handler) reviewPR(parent context.Context, log *slog.Logger, t reviewTar
 		log.Warn("repo config not loaded",
 			"reason", "head is untrusted and base ref is unknown; refusing to read .nitpick.yaml from the head SHA")
 	}
-	var (
-		repoNotes   []byte
-		ignorePaths []string
-	)
+	var repoNotes []byte
 	if repoCfg != nil {
 		if s := repoCfg.Review.ContextNotes; s != "" {
 			repoNotes = []byte(s)
 		}
-		ignorePaths = repoCfg.Review.IgnorePaths
 	}
-	if len(ignorePaths) > 0 {
-		before := len(hunks)
-		hunks = diff.FilterByPath(hunks, func(p string) bool {
-			return config.MatchAny(p, ignorePaths)
-		})
-		if dropped := before - len(hunks); dropped > 0 {
-			log.Info("ignore_paths applied", "hunks_dropped", dropped, "hunks_kept", len(hunks))
-		}
+
+	// Parse, ignore_paths, redaction, and escalation live in one place the
+	// CLI and the eval share, so what the eval measures is what runs here.
+	// Secrets-shaped files keep their structure with values replaced rather
+	// than being dropped: "you committed a .env" is the most valuable
+	// finding nitpick could make.
+	prepared, err := review.Prepare(raw, repoCfg)
+	if err != nil {
+		log.Error("prepare diff", "err", err)
+		release()
+		return
+	}
+	hunks := prepared.Hunks
+	if prepared.IgnoredHunks > 0 {
+		log.Info("ignore_paths applied", "hunks_dropped", prepared.IgnoredHunks, "hunks_kept", len(hunks))
+	}
+	if prepared.RedactedLines > 0 {
+		log.Warn("redacted secrets from diff before sending to provider",
+			"lines", prepared.RedactedLines, "files", prepared.RedactedFiles)
 	}
 	if len(hunks) == 0 {
-		// Every changed file matched ignore_paths — no point invoking the
-		// LLM. Still post a status comment so the run isn't silent (same
-		// pattern as the zero-findings case): visible runs are debuggable.
-		body := "**nitpick** — all changed files filtered by `.nitpick.yaml` `ignore_paths`; nothing to review"
+		// Nothing left to review, most often because every changed file
+		// matched ignore_paths. Still post a status comment so the run
+		// isn't silent (same pattern as the zero-findings case).
+		body := "**nitpick** — nothing to review in this diff"
+		if prepared.IgnoredHunks > 0 {
+			body = "**nitpick** — all changed files filtered by `.nitpick.yaml` `ignore_paths`; nothing to review"
+		}
 		if err := client.PostIssueComment(ctx, repo, prNum, body); err != nil {
 			log.Warn("post status comment", "err", err)
 		}
 		log.Info("review skipped", "reason", "no hunks remain after ignore_paths filter")
 		return
-	}
-
-	// Strip credentials from the diff before anything leaves the process.
-	// Every changed line goes to the provider, so a PR that commits a .env
-	// would otherwise send it verbatim — review.ignore_paths was the only
-	// guard, and it is opt-in, so the default configuration leaked.
-	//
-	// Secrets-shaped files keep their structure with values replaced rather
-	// than being dropped: "you committed a .env" is the most valuable finding
-	// nitpick could make here, and silently removing the file would throw it
-	// away.
-	hunks, redactedLines, redactedFiles := secrets.SanitizeHunks(hunks)
-	if redactedLines > 0 {
-		log.Warn("redacted secrets from diff before sending to provider",
-			"lines", redactedLines, "files", redactedFiles)
 	}
 
 	contextFiles := fetchContextFiles(ctx, log, client, repo, headSHA, hunks)
@@ -1148,7 +1132,7 @@ func (h *Handler) reviewPR(parent context.Context, log *slog.Logger, t reviewTar
 
 	// Model routing (review.escalate). Decided on the post-ignore_paths file
 	// list, so an ignored file never pulls in the expensive model.
-	reviewer := h.selectProvider(log, repoCfg, hunks)
+	reviewer := h.selectProvider(log, prepared.Model, prepared.EscalatedOn)
 
 	res, err := reviewer.Review(ctx, provider.ReviewRequest{
 		Hunks:          hunks,

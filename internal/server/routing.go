@@ -5,8 +5,6 @@ import (
 	"log/slog"
 	"sync"
 
-	"github.com/cjunks94/nitpick/internal/config"
-	"github.com/cjunks94/nitpick/internal/diff"
 	"github.com/cjunks94/nitpick/internal/provider"
 )
 
@@ -46,11 +44,7 @@ func MemoizedProviderFactory(providerName string) ProviderFactory {
 // provider: routing failures (no factory wired, unsupported model) fall back
 // to the default and are logged, because a misconfigured escalation must not
 // silently skip the review.
-func (h *Handler) selectProvider(log *slog.Logger, repoCfg *config.Config, hunks []diff.Hunk) provider.Provider {
-	if repoCfg == nil {
-		return h.Provider
-	}
-	model, matched := repoCfg.ModelFor(diff.Files(hunks))
+func (h *Handler) selectProvider(log *slog.Logger, model, matched string) provider.Provider {
 	if matched == "" {
 		return h.Provider
 	}
