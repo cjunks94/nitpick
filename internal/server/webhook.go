@@ -9,10 +9,7 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
-	"path/filepath"
 	"regexp"
-	"sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -1199,9 +1196,11 @@ func (h *Handler) reviewPR(parent context.Context, log *slog.Logger, t reviewTar
 // 1M (Sonnet/Opus), so these are conservative. Token cost matters more than
 // the limit — every extra 4K chars is ~1K tokens, roughly $0.001 on Haiku.
 const (
-	maxContextFiles      = 5
-	maxContextFileBytes  = 60 * 1024  // skip individual files larger than 60 KiB
-	maxContextTotalBytes = 200 * 1024 // skip remaining files once total exceeds 200 KiB
+	// Context caps live in internal/review so the eval snapshot selects
+	// the same files serve does; aliased here for the tests that name them.
+	maxContextFiles      = review.MaxContextFiles
+	maxContextFileBytes  = review.MaxContextFileBytes
+	maxContextTotalBytes = review.MaxContextTotalBytes
 
 	// repoConfigPath is the convention nitpick looks for. Matches the
 	// .nitpick.yaml.example shipped in this repo. We don't fall back to
@@ -1311,154 +1310,18 @@ func fetchRepoConfig(ctx context.Context, log *slog.Logger, client *ghc.HTTPClie
 	return &cfg
 }
 
-// contextDenyExtensions are file suffixes we never fetch as context — they're
-// generated, binary metadata, or lockfile churn that adds no review signal
-// and wastes the context budget. Observed in prod: Godot .uid files (3 bytes
-// of "uid://...") ate 40% of a PR's context budget, crowding out the actual
-// changed source files. Lowercase comparison; extensions include the leading
-// dot.
-var contextDenyExtensions = []string{
-	".uid",     // Godot resource metadata
-	".sum",     // go.sum / similar checksum files
-	".lock",    // generic lockfile suffix
-	".min.js",  // minified bundles
-	".min.css", // minified bundles
-	".map",     // sourcemaps
-	".pb.go",   // generated protobuf (Go)
-	".pyc",     // compiled Python
-}
-
-// contextDenyFilenames is a hard-coded list of basenames we always skip
-// regardless of path. Lockfiles for the major ecosystems.
-var contextDenyFilenames = map[string]bool{
-	"package-lock.json": true,
-	"yarn.lock":         true,
-	"pnpm-lock.yaml":    true,
-	"Gemfile.lock":      true,
-	"Cargo.lock":        true,
-	"poetry.lock":       true,
-	"Pipfile.lock":      true,
-	"composer.lock":     true,
-	"go.sum":            true,
-}
-
-// isContextDenied reports whether a file path is on the don't-fetch list.
-// Path comparison is case-insensitive on the extensions (since some
-// repos / OSes do uppercase) but case-sensitive on basenames (lockfile
-// names are stable).
-func isContextDenied(path string) bool {
-	// Credentials files are dropped from context outright rather than
-	// redacted. Context exists to explain surrounding code, and a secrets
-	// file explains nothing — it is all risk and no review signal. (The diff
-	// path keeps them, redacted, so the bot can still flag the commit.)
-	if secrets.IsSensitivePath(path) {
-		return true
-	}
-	if contextDenyFilenames[filepath.Base(path)] {
-		return true
-	}
-	lower := strings.ToLower(path)
-	for _, ext := range contextDenyExtensions {
-		if strings.HasSuffix(lower, ext) {
-			return true
-		}
-	}
-	return false
-}
-
-// fileChangeWeight returns the number of added+removed lines for a file
-// across all its hunks. Used as the sort key so the biggest changes get
-// context priority when the file-count budget is tight.
-func fileChangeWeight(hunks []diff.Hunk, file string) int {
-	n := 0
-	for _, h := range hunks {
-		if h.File != file {
-			continue
-		}
-		for _, line := range h.Lines {
-			if line.Kind == diff.LineAdded || line.Kind == diff.LineRemoved {
-				n++
-			}
-		}
-	}
-	return n
-}
-
 // fetchContextFiles pulls the full content of files touched by the diff (at
-// the PR head SHA), to give the reviewer enough context to avoid the "needs
-// surrounding code" false-positive class. Returns nil on any error — diff-
-// only review is the graceful fallback and worse than having context but
-// better than crashing.
-//
-// Two prioritization rules applied before the maxContextFiles cap:
-//  1. Skip files matching the deny list (generated metadata, lockfiles,
-//     minified bundles). Observed in prod: .uid files burned context budget
-//     and crowded out real source files.
-//  2. Sort remaining by added+removed line count descending — the biggest
-//     changes are the most likely to need surrounding context.
+// the PR head SHA) so the reviewer sees definitions, return paths, and
+// framework conventions that live outside the changed lines. Selection and
+// caps are review.ContextCandidates / review.AttachContext, shared with the
+// eval so the gate measures the same input. Returns nil when nothing could
+// be fetched; diff-only review is the graceful fallback.
 func fetchContextFiles(ctx context.Context, log *slog.Logger, client *ghc.HTTPClient, repo, sha string, hunks []diff.Hunk) []provider.ContextFile {
-	// Collect unique non-denied file paths.
-	seen := make(map[string]bool, len(hunks))
-	var paths []string
-	for _, h := range hunks {
-		if h.File == "" || seen[h.File] {
-			continue
-		}
-		seen[h.File] = true
-		if isContextDenied(h.File) {
-			log.Debug("context file denied by pattern", "path", h.File)
-			continue
-		}
-		paths = append(paths, h.File)
-	}
-	// Sort by change weight desc so the biggest changes win the budget.
-	sort.SliceStable(paths, func(i, j int) bool {
-		return fileChangeWeight(hunks, paths[i]) > fileChangeWeight(hunks, paths[j])
-	})
-	// Apply the file-count cap after sorting (not during enumeration).
-	if len(paths) > maxContextFiles {
-		paths = paths[:maxContextFiles]
-	}
-	if len(paths) == 0 {
+	candidates := review.ContextCandidates(hunks)
+	if len(candidates) == 0 {
 		return nil
 	}
-
-	var (
-		out        []provider.ContextFile
-		totalBytes int
-	)
-	for _, p := range paths {
-		content, err := client.FetchFile(ctx, repo, sha, p)
-		if err != nil {
-			// Most common: new file that doesn't exist at base, or file
-			// deleted in the PR. Skip silently — the diff still works.
-			log.Debug("context file fetch skipped", "path", p, "err", err)
-			continue
-		}
-		if len(content) > maxContextFileBytes {
-			log.Debug("context file too large, skipping",
-				"path", p, "bytes", len(content), "cap", maxContextFileBytes)
-			continue
-		}
-		if totalBytes+len(content) > maxContextTotalBytes {
-			log.Debug("context budget exhausted; stopping fetch",
-				"so_far_bytes", totalBytes, "cap", maxContextTotalBytes, "remaining_files", len(paths)-len(out))
-			break
-		}
-		// Second line of defence. The path deny-list above catches files that
-		// are credentials by convention; this catches a key hardcoded inside
-		// an ordinary source file, which no path rule can know about.
-		content, redacted := secrets.RedactBytes(content)
-		if redacted > 0 {
-			log.Warn("redacted secrets from context file",
-				"path", p, "lines", redacted)
-		}
-		out = append(out, provider.ContextFile{Path: p, Content: content})
-		totalBytes += len(content)
-	}
-	log.Info("context fetched",
-		"files_attempted", len(paths),
-		"files_attached", len(out),
-		"total_bytes", totalBytes)
-	return out
+	return review.AttachContext(candidates, func(p string) ([]byte, error) {
+		return client.FetchFile(ctx, repo, sha, p)
+	}, log)
 }

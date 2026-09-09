@@ -74,3 +74,14 @@ The header states which matcher scored the run and how many labels carry keyword
 - Commit `REPORT.md` on every prompt change.
 - Don't squash the commits — the *history* of REPORT.md is the artifact.
 - Re-label cases only when a real bug surfaces in the labels themselves; don't tune labels to match the bot.
+
+## Whole-file context
+
+`serve` attaches up to 5 whole files touched by the diff (60 KiB each, 200 KiB total, deny-listed and change-weight-sorted) so the model sees definitions outside the changed lines. The fixtures are static diffs, so the eval cannot fetch those at review time; instead they are snapshotted once and committed:
+
+```bash
+./nitpick eval --snapshot-context            # fetch each case's files at the PR head SHA via gh into eval/cases/testdata/context/pr-<N>/
+./nitpick eval --provider anthropic --model claude-sonnet-4-6 --context   # attach them, same selection and caps as serve
+```
+
+Selection is `review.ContextCandidates` and caps are `review.AttachContext`, the same code `serve` runs, so a sweep with `--context` measures the input production sends. Each snapshot directory holds a `HEAD` file with the SHA the files came from, and the files are redacted at write time as well as at load. `REPORT.md` says `Context: on` or `Context: off` in its header; rows in `HANDOFF.md` say which.

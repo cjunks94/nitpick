@@ -44,6 +44,10 @@ type ExpectedFinding struct {
 }
 
 type CaseResult struct {
+	// ContextFiles is how many whole files were attached alongside the diff
+	// (0 when the sweep ran diff-only). Reported in the header so a run with
+	// context is never mistaken for one without.
+	ContextFiles int
 	Case    Case
 	Hits    []provider.Comment
 	Misses  []ExpectedFinding
@@ -55,6 +59,22 @@ type CaseResult struct {
 // When loadGuidelines is false, per-repo CLAUDE.md files are skipped — useful
 // for measuring baseline variance against the with-guidelines configuration.
 func Run(ctx context.Context, casesPath, outPath string, p provider.Provider, loadGuidelines bool) error {
+	return RunWithOptions(ctx, casesPath, outPath, p, Options{Guidelines: loadGuidelines})
+}
+
+// Options selects the optional inputs a sweep sends alongside each diff.
+type Options struct {
+	// Guidelines loads eval/cases/repos/<owner>__<repo>.md as cached
+	// context (the 3v3 A/B showed no win; off by default).
+	Guidelines bool
+	// Context attaches the whole-file context serve would fetch, read from
+	// the snapshot Snapshot wrote under ContextDir. Cases with no snapshot
+	// run diff-only, as serve does when every fetch fails.
+	Context bool
+}
+
+// RunWithOptions is Run with every optional input spelled out.
+func RunWithOptions(ctx context.Context, casesPath, outPath string, p provider.Provider, opts Options) error {
 	cases, err := loadCases(casesPath)
 	if err != nil {
 		return fmt.Errorf("load cases: %w", err)
@@ -77,8 +97,12 @@ func Run(ctx context.Context, casesPath, outPath string, p provider.Provider, lo
 			return fmt.Errorf("prepare %s: %w", c.DiffPath, err)
 		}
 		hunks := prepared.Hunks
+		var contextFiles []provider.ContextFile
+		if opts.Context {
+			contextFiles = review.AttachContext(review.ContextCandidates(hunks), loadContext(ContextDir(casesPath, c.PR)), nil)
+		}
 		var guidelines []byte
-		if loadGuidelines {
+		if opts.Guidelines {
 			guidelines, err = loadRepoGuidelines(reposDir, c.Repo)
 			if err != nil {
 				return fmt.Errorf("load guidelines for %s: %w", c.Repo, err)
@@ -86,6 +110,7 @@ func Run(ctx context.Context, casesPath, outPath string, p provider.Provider, lo
 		}
 		res, err := p.Review(ctx, provider.ReviewRequest{
 			Hunks:          hunks,
+			ContextFiles:   contextFiles,
 			RepoGuidelines: guidelines,
 		})
 		if err != nil {
@@ -96,7 +121,9 @@ func Run(ctx context.Context, casesPath, outPath string, p provider.Provider, lo
 			fmt.Fprintf(os.Stderr, "nitpick: PR #%d (%s) errored, recording zero findings: %v\n", c.PR, c.Repo, err)
 			res = provider.ReviewResult{}
 		}
-		results = append(results, score(c, res))
+		cr := score(c, res)
+		cr.ContextFiles = len(contextFiles)
+		results = append(results, cr)
 	}
 
 	// #nosec G304 -- outPath comes from the operator's --out flag; this is
@@ -239,6 +266,18 @@ func writeReport(out io.Writer, providerName string, results []CaseResult) error
 	fmt.Fprintf(w, "Cases: %d  ·  Expected findings: %d  ·  Produced: %d\n\n",
 		len(results), totalExpected, totalProduced)
 	fmt.Fprintf(w, "Input: review.Prepare, the production pipeline (secrets redacted line for line; no repo config, so no ignore_paths or escalation)\n\n")
+	ctxFiles, ctxCases := 0, 0
+	for _, r := range results {
+		if r.ContextFiles > 0 {
+			ctxCases++
+			ctxFiles += r.ContextFiles
+		}
+	}
+	if ctxCases > 0 {
+		fmt.Fprintf(w, "Context: on — %d whole file(s) attached across %d case(s) from the committed snapshots (review.ContextCandidates / AttachContext, as serve)\n\n", ctxFiles, ctxCases)
+	} else {
+		fmt.Fprintf(w, "Context: off — diff only\n\n")
+	}
 	fmt.Fprintf(w, "Matcher: file + line ±3, plus a label keyword in the body (%d of %d labels carry keywords)\n\n",
 		totalKeyworded, totalExpected)
 	fmt.Fprintln(w, "| Metric | Value |")
