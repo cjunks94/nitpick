@@ -71,6 +71,10 @@ type pricePerMTok struct {
 var priceTable = map[anthropic.Model]pricePerMTok{
 	anthropic.ModelClaudeHaiku4_5:  {input: 1.00, output: 5.00},
 	anthropic.ModelClaudeSonnet4_6: {input: 3.00, output: 15.00},
+	// Current generation, added 2026-09-09 for the model-tier probe on the
+	// 18-label set. List prices per the Claude API reference of that date.
+	anthropic.ModelClaudeSonnet5: {input: 2.00, output: 10.00},
+	anthropic.ModelClaudeOpus5:   {input: 5.00, output: 25.00},
 }
 
 // NewAnthropic returns a provider. modelID overrides the default; empty
@@ -118,7 +122,10 @@ func (a Anthropic) Review(ctx context.Context, req ReviewRequest) (ReviewResult,
 
 	resp, err := a.client.Messages.New(ctx, anthropic.MessageNewParams{
 		Model:     a.model,
-		MaxTokens: 4096,
+		// Opus 5 and Sonnet 5 run adaptive thinking by default and thinking
+		// tokens count toward max_tokens, so 4096 could be spent before the
+		// findings JSON is written. The JSON itself is small; this is a cap.
+		MaxTokens: 16000,
 		System:    systemBlocks,
 		Messages: []anthropic.MessageParam{
 			anthropic.NewUserMessage(anthropic.NewTextBlock(userText)),
