@@ -1,17 +1,17 @@
 # Eval report — `anthropic-claude-sonnet-4-6`
 
-Cases: 20  ·  Expected findings: 7  ·  Produced: 6
+Cases: 20  ·  Expected findings: 7  ·  Produced: 5
 
 Matcher: file + line ±3, plus a label keyword in the body (7 of 7 labels carry keywords)
 
 | Metric | Value |
 |---|---|
-| Precision | 0.167 |
+| Precision | 0.200 |
 | Recall (all) | 0.143 |
 | Recall (critical) | 0.000 |
 | Recall (useful) | 0.143 |
-| Noise rate | 0.833 |
-| Avg $/PR | $0.0184 |
+| Noise rate | 0.800 |
+| Avg $/PR | $0.0182 |
 
 ## Per-case
 | PR | Repo | Expected | Hits | Misses | Extras | $ |
@@ -24,16 +24,16 @@ Matcher: file + line ±3, plus a label keyword in the body (7 of 7 labels carry 
 | #29 | cjunks94/agentic-portfolio | 1 | 0 | 1 | 0 | $0.0152 |
 | #25 | cjunks94/agentic-portfolio | 0 | 0 | 0 | 0 | $0.0205 |
 | #56 | cjunks94/panoptrain | 1 | 0 | 1 | 0 | $0.0921 |
-| #121 | cjunks94/exportee-rails | 1 | 1 | 0 | 1 | $0.0305 |
+| #121 | cjunks94/exportee-rails | 1 | 1 | 0 | 2 | $0.0310 |
 | #101 | cjunks94/exportee-rails | 1 | 0 | 1 | 0 | $0.0118 |
 | #28 | cjunks94/agentic-portfolio | 0 | 0 | 0 | 0 | $0.0047 |
 | #27 | cjunks94/agentic-portfolio | 0 | 0 | 0 | 0 | $0.0057 |
 | #59 | cjunks94/panoptrain | 1 | 0 | 1 | 0 | $0.0136 |
 | #54 | cjunks94/panoptrain | 0 | 0 | 0 | 0 | $0.0369 |
-| #117 | cjunks94/exportee-rails | 1 | 0 | 1 | 3 | $0.0239 |
+| #117 | cjunks94/exportee-rails | 1 | 0 | 1 | 1 | $0.0199 |
 | #69 | cjunks94/resume-improvements | 0 | 0 | 0 | 0 | $0.0777 |
 | #64 | cjunks94/resume-improvements | 0 | 0 | 0 | 0 | $0.0018 |
-| #57 | cjunks94/resume-improvements | 0 | 0 | 0 | 1 | $0.0037 |
+| #57 | cjunks94/resume-improvements | 0 | 0 | 0 | 1 | $0.0038 |
 | #10 | cjunks94/hush-hush | 0 | 0 | 0 | 0 | $0.0087 |
 | #9 | cjunks94/hush-hush | 0 | 0 | 0 | 0 | $0.0010 |
 
@@ -49,8 +49,9 @@ Matcher: file + line ±3, plus a label keyword in the body (7 of 7 labels carry 
 - MISS `packages/client/src/lib/tafCurrentPeriod.ts:28` [useful/correctness] selection loop picks last in iteration order, not latest timeFrom — assumes upstream returns basePeriods sorted ascending
 
 ### #121 cjunks94/exportee-rails
-- HIT `app/services/sources/salesforce_adapter.rb:45` [useful/performance] The `extract` method accumulates all records into a `rows` array in memory before returning. For large Salesforce result sets (which Restforce lazily paginates via `Enumerator`), this can cause unbounded memory growth. Consider yielding records or using `client.query(query).map { |r| normalize_record(r) }` which is equivalent but at least signals intent; the real fix is to stream into the CSV writer rather than buffer the full dataset.
-- EXTRA `app/services/sources/salesforce_adapter.rb:74` [useful/correctness] The `credentials` fallback `connection.connection_config.fetch("credentials", config)` uses the entire `config` hash as the fallback, meaning if the `"credentials"` key is absent, credential lookups like `credentials["username"]` will silently fall back to top-level config values. This is likely unintentional and could cause confusing authentication failures; a safer fallback is `{}` or raising an explicit error.
+- HIT `app/services/sources/salesforce_adapter.rb:44` [useful/correctness] extract accumulates all records into rows[] before returning, so it holds the entire result set in memory. For large Salesforce result sets (Restforce auto-paginates via Restforce::Collection), this can exhaust memory; consider using lazy enumeration or streaming to the caller.
+- EXTRA `app/services/sources/salesforce_adapter.rb:26` [useful/performance / N+1] introspect_schema calls client.describe(sobject["name"]) for every queryable object inside a map, producing N+1 round-trips to Salesforce. For orgs with hundreds of objects this will be slow and may hit API limits; there is no batching or concurrency.
+- EXTRA `app/services/sources/salesforce_adapter.rb:74` [useful/correctness] credentials falls back to the entire config hash when the "credentials" key is absent (`connection.connection_config.fetch("credentials", config)`), meaning top-level config keys (instance_url, sandbox, api_version) would be treated as credentials and real credential keys would be missing, silently passing nil values to Restforce.
 
 ### #101 cjunks94/exportee-rails
 - MISS `app/controllers/api/v1/base_controller.rb:83` [useful/security] bad_request_with_message renders raw exception.message from ArgumentError; risks leaking internal context (CLAUDE.md: error messages must not leak internal details)
@@ -60,9 +61,7 @@ Matcher: file + line ±3, plus a label keyword in the body (7 of 7 labels carry 
 
 ### #117 cjunks94/exportee-rails
 - MISS `app/services/transforms/data_frame_pipeline.rb:100` [useful/security] const_get with widget_name from YAML config can resolve to unintended constants; safer to dispatch via an explicit widget→class hash
-- EXTRA `app/services/transforms/data_frame_pipeline.rb:101` [critical/] When the widget_name is unknown (or "mask_email"), `const_get(widget_name.camelize)` raises `NameError` instead of falling back gracefully if the constant doesn't exist under `Widgets::Builtins`. There is no rescue around this call, so any unrecognized widget will crash the export rather than silently skipping or falling through to a no-op.
-- EXTRA `app/services/transforms/data_frame_pipeline.rb:104` [useful/] If `apply_row_by_row_fallback` receives rows where all entries are filtered out (all `filter_map` results are nil/false), it returns `df.clear`, which produces an empty DataFrame with the old schema. However the next transform that receives this cleared DF may fail or silently drop rows if the calling code expects a consistent schema after a widget that removed rows mid-chain.
-- EXTRA `app/services/exports/executor.rb:92` [useful/] `result[:bytes_written]` is checked after `call_and_write_csv` writes the tempfile, but the artifact is attached to ActiveStorage before verifying `max_upload_bytes`; the raise happens after the write but the attach call on line 97 only runs when the check passes, so this is fine — however if `result[:bytes_written]` is nil (e.g., `legacy_write` for the empty-rows path returns a hash from `Csv.write` whose shape may differ), the `>` comparison will raise a `NoMethodError`. Confirm `legacy_write` always returns a hash containing `:bytes_written`.
+- EXTRA `app/services/transforms/data_frame_pipeline.rb:101` [critical/] NameError raised for unknown widget names: `Widgets::Builtins.const_get(widget_name.camelize)` will throw NameError if the constant doesn't exist, crashing the export rather than falling back gracefully. This path is hit for both `mask_email` and any unknown widget, so a misconfigured or third-party widget name silently breaks the entire run. A rescue NameError returning `df` (or logging and skipping) is needed.
 
 ### #57 cjunks94/resume-improvements
-- EXTRA `.github/workflows/canary-build.yml:23` [useful/invalid-action-version] actions/checkout@v6 does not exist; the latest major release is v4. This will cause all jobs referencing it to fail at runtime.
+- EXTRA `.github/workflows/canary-build.yml:23` [useful/nonexistent-action-version] actions/checkout@v6 does not exist; the latest major release is v4. This will cause all workflow runs to fail at the checkout step.
