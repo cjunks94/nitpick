@@ -81,6 +81,8 @@ Three-run mean per config against the 20 labeled PRs (Haiku v2 prompt; same prom
 | Sonnet 4.6 v2.8, **18-label set** (3 runs, 2026-09-09) | 5.7 | 0.43 | 0.19 | 0.13 | 0.57 | 0.20 | $0.018 |
 | Sonnet 4.6 v2.8, 18-label set, redacted eval input (3 runs, 2026-09-09, PR #45) | 5.7 | 0.42 | 0.19 | 0.13 | 0.58 | 0.20 | $0.018 |
 | Sonnet 4.6 v2.8, 18-label set, **context ON as serve sends it** (3 runs, 2026-09-09, PR #46) | 3.3 | 0.00 | 0.00 | 0.00 | 1.00 | 0.00 | $0.043 |
+| Sonnet 4.6 **v2.9 (rejected)**, 18 labels, context ON (3 runs, 2026-09-09, PR #48 closed) | 2.3 | 0.17 | 0.03 | 0.02 | 0.83 | 0.03 | $0.043 |
+| Sonnet 4.6 **v2.9 (rejected)**, 18 labels, diff only (3 runs, 2026-09-09, PR #48 closed) | 3.3 | 0.42 | 0.08 | 0.07 | 0.58 | 0.13 | $0.018 |
 | Haiku v2.8, keyword matcher, gate for PR #22 (3 runs, 2026-09-08) | 16.3 | 0.02 | 0.05 | 0.05 | 0.98 | 0.03 | $0.008 |
 | Sonnet 4.6 v2.8, keyword matcher, SDK probe (2 runs, 2026-09-09) | 4.5 | 0.23 | 0.14 | 0.14 | 0.78 | 0.17 | $0.018 |
 
@@ -111,6 +113,8 @@ v2.7 re-baseline (three runs each, 2026-09-02): Haiku is unchanged within noise 
 ## Things tried that didn't work (committed as data points)
 
 These are in the git log; don't re-do them.
+
+- **Prompt v2.9, "context is evidence"** (branch `prompt/v2.9-context-as-evidence`, PR #48 closed unmerged, 2026-09-09). Hypothesis: the v2.8 Input-structure section only told the model to drop or skip on CONTEXT, and the user-message header called the changed file (present in full as context) "do NOT flag", so rewriting both passages to make context confirm findings would lift context-on recall from the 0-of-18 floor. Six Sonnet runs: context on 0 / 0 / 1 of 18 (produced 3 / 2 / 2), diff only 2 / 1 / 1 (produced 3 / 3 / 4) against the v2.8 baseline of 2 / 3 / 2 (produced 6 / 5 / 6). Rewording did nothing for context and made the diff-only prompt quieter by half. Lesson: the suppression is not in those two passages; the presence of the whole file is what silences a silence-first prompt, and any wording that mentions context as something to check against reads as another reason to stay quiet. Next levers if context is to work at all: lower the >=90% confidence bar only when context is present, a two-pass review (find in the diff, verify against context), or a different model tier. Diff-only remains the production input.
 
 - **CLAUDE.md injection as cached system block** (commits `f599f48` + 3 attempts, reverted to opt-in via `--guidelines` in `f77bce1`). 3v3 A/B: with-CLAUDE.md was directionally worse on every metric. Hypothesis: a project conventions doc steers the bot toward compliance review rather than bug-finding. Code path kept; default off.
 - **Sonnet-tuned prompt variant** (commit `19b1d2d`, reverted `423be11`). Loosened threshold from 90% → 75% trying to lift Sonnet's recall. Just made Sonnet behave like Haiku at 5× cost — precision crashed 0.50 → 0.14, useful_recall didn't move. Lesson: tightening prompts works better than loosening for capable models.
