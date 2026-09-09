@@ -145,6 +145,13 @@ func Review(ctx context.Context, args []string) error {
 	}
 	duration := time.Since(start)
 
+	// One off-diff comment would 422 the whole review; drop it instead.
+	var dropped []provider.Comment
+	result.Comments, dropped = ghc.DropUnanchored(result.Comments, hunks)
+	for _, d := range dropped {
+		fmt.Fprintf(os.Stderr, "nitpick: dropped finding outside the diff: %s:%d\n", d.File, d.Line)
+	}
+
 	if *dryRun {
 		return ghc.PrintComments(os.Stdout, result.Comments, result.CostUSD)
 	}
