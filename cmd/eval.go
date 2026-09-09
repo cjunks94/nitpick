@@ -16,7 +16,7 @@ func Eval(ctx context.Context, args []string) error {
 	flags := flag.NewFlagSet("eval", flag.ContinueOnError)
 	casesPath := flags.String("cases", "eval/cases/cases.jsonl", "path to cases.jsonl")
 	providerName := flags.String("provider", "stub", "stub | anthropic")
-	model := flags.String("model", "", "model id override (anthropic: claude-haiku-4-5 default, claude-sonnet-4-6 escalation)")
+	model := flags.String("model", "", "model id override (anthropic: claude-haiku-4-5 default; also claude-sonnet-4-6, claude-sonnet-5, claude-opus-5)")
 	outPath := flags.String("out", "eval/REPORT.md", "report output path")
 	guidelines := flags.Bool("guidelines", false, "load per-repo CLAUDE.md from eval/cases/repos/ as cached context (opt-in; default off after 3v3 A/B showed no win)")
 	withContext := flags.Bool("context", false, "attach the whole-file context serve would fetch, from the snapshots under eval/cases/testdata/context/ (run --snapshot-context first)")

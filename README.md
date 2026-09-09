@@ -248,7 +248,7 @@ The `context_notes` field is the key per-repo lever. nitpick injects it into the
 
 - **A malformed glob fails the whole file.** The CLI aborts with the parse error; `serve` logs `.nitpick.yaml parse failed` and reviews with built-in defaults — so one bad `ignore_paths` pattern silently drops `context_notes` and `escalate` too. Check the log line after adding patterns.
 - **`escalate` needs both `model` and `paths`.** A half-configured block is a parse error.
-- **Models must be `claude-haiku-4-5` or `claude-sonnet-4-6`.** On `serve` a bad `escalate.model` logs and falls back to the default model; on the CLI it aborts. A bad `NITPICK_MODEL` makes `serve` exit at startup.
+- **Models must be a priced id: `claude-haiku-4-5`, `claude-sonnet-4-6`, `claude-sonnet-5`, or `claude-opus-5`** (the `priceTable` in `internal/provider`; Opus 5 and Sonnet 5 added 2026-09-09, results in `HANDOFF.md`). On `serve` a bad `escalate.model` logs and falls back to the default model; on the CLI it aborts. A bad `NITPICK_MODEL` makes `serve` exit at startup.
 - **Durations** (`wait_timeout`, `poll_interval`) accept Go syntax (`5m`, `30s`, `2m30s`) or a bare number of seconds; negatives are rejected. `wait_timeout` is capped at 10m, `poll_interval` floored at 5s.
 - **Size caps on `serve`:** the file is ignored above 32 KiB; `context_notes` is truncated at 16 KiB.
 - **`**/` also matches root-level files:** `**/*.lock` matches `yarn.lock` as well as `web/yarn.lock`.
