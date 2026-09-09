@@ -59,9 +59,16 @@ var hunkHeaderRE = regexp.MustCompile(`^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? 
 // ParseUnifiedDiff parses a unified diff into hunks.
 func ParseUnifiedDiff(raw []byte) ([]Hunk, error) {
 	var (
-		hunks       []Hunk
-		current     *Hunk
+		hunks   []Hunk
+		current *Hunk
+		// currentFile is the path findings anchor on: the new-side path, or
+		// the old-side path when the new side is /dev/null (a deletion).
+		// Both headers are read because every path-keyed guard downstream
+		// (secret redaction, ignore_paths, escalate.paths) keys on this,
+		// and a deleted .env used to parse with File == "" and slip past
+		// all of them.
 		currentFile string
+		oldFile     string
 		// position is per-file. First @@ in a file has position 0 (not commentable);
 		// the line right after is position 1. Subsequent @@ within the same file
 		// DO increment per GitHub's documented scheme.
@@ -96,6 +103,7 @@ func ParseUnifiedDiff(raw []byte) ([]Hunk, error) {
 		case strings.HasPrefix(line, "diff --git "):
 			flush()
 			currentFile = ""
+			oldFile = ""
 			position = 0
 			seenHunk = false
 		case seenHunk && strings.HasPrefix(line, `\`):
@@ -105,12 +113,14 @@ func ParseUnifiedDiff(raw []byte) ([]Hunk, error) {
 			// exhaustion, and position must still advance for the next hunk
 			// in the same file.
 			position++
-		case current == nil && strings.HasPrefix(line, "+++ b/"):
-			currentFile = strings.TrimPrefix(line, "+++ b/")
 		case current == nil && strings.HasPrefix(line, "+++ "):
-			// /dev/null or other; ignore for file path
+			if p := headerPath(line[4:], "b/"); p != "" {
+				currentFile = p
+			} else if oldFile != "" {
+				currentFile = oldFile // deletion: anchor on the old path
+			}
 		case current == nil && strings.HasPrefix(line, "--- "):
-			// ignore old-file header
+			oldFile = headerPath(line[4:], "a/")
 		case strings.HasPrefix(line, "@@"):
 			flush()
 			m := hunkHeaderRE.FindStringSubmatch(line)
@@ -218,4 +228,79 @@ func ParseUnifiedDiff(raw []byte) ([]Hunk, error) {
 		return nil, err
 	}
 	return hunks, nil
+}
+
+// headerPath extracts the repository path from the payload of a "--- " or
+// "+++ " header line. It returns "" for /dev/null. Git C-quotes a path that
+// contains non-ASCII bytes, quotes, backslashes, or control characters
+// (`+++ "b/docs/r\303\251sum\303\251.md"`), and appends a tab after an
+// unquoted path that contains spaces; both forms are normalised here. A
+// path that does not carry the expected a/ or b/ prefix (--no-prefix diffs)
+// is returned as-is.
+func headerPath(payload, prefix string) string {
+	payload = strings.TrimRight(payload, "\t")
+	if strings.HasPrefix(payload, `"`) {
+		payload = unquoteGitPath(payload)
+	}
+	if payload == "/dev/null" {
+		return ""
+	}
+	return strings.TrimPrefix(payload, prefix)
+}
+
+// unquoteGitPath decodes git's C-style path quoting: a leading and trailing
+// double quote, with \\ \" \t \n \r \a \b \f \v and three-digit octal
+// byte escapes inside. Input that is not well-formed is returned unchanged
+// rather than guessed at.
+func unquoteGitPath(q string) string {
+	if len(q) < 2 || q[0] != '"' || q[len(q)-1] != '"' {
+		return q
+	}
+	in := q[1 : len(q)-1]
+	out := make([]byte, 0, len(in))
+	for i := 0; i < len(in); i++ {
+		c := in[i]
+		if c != '\\' {
+			out = append(out, c)
+			continue
+		}
+		i++
+		if i >= len(in) {
+			return q
+		}
+		switch e := in[i]; e {
+		case '\\', '"':
+			out = append(out, e)
+		case 't':
+			out = append(out, '\t')
+		case 'n':
+			out = append(out, '\n')
+		case 'r':
+			out = append(out, '\r')
+		case 'a':
+			out = append(out, '\a')
+		case 'b':
+			out = append(out, '\b')
+		case 'f':
+			out = append(out, '\f')
+		case 'v':
+			out = append(out, '\v')
+		case '0', '1', '2', '3':
+			if i+2 >= len(in) {
+				return q
+			}
+			var b byte
+			for _, d := range in[i : i+3] {
+				if d < '0' || d > '7' {
+					return q
+				}
+				b = b*8 + byte(d-'0')
+			}
+			out = append(out, b)
+			i += 2
+		default:
+			return q
+		}
+	}
+	return string(out)
 }
