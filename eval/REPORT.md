@@ -1,6 +1,6 @@
 # Eval report — `anthropic-claude-sonnet-4-6`
 
-Cases: 20  ·  Expected findings: 18  ·  Produced: 3
+Cases: 20  ·  Expected findings: 18  ·  Produced: 4
 
 Input: review.Prepare, the production pipeline (secrets redacted line for line; no repo config, so no ignore_paths or escalation)
 
@@ -10,12 +10,12 @@ Matcher: file + line ±3, plus a label keyword in the body (18 of 18 labels carr
 
 | Metric | Value |
 |---|---|
-| Precision | 0.333 |
+| Precision | 0.250 |
 | Recall (all) | 0.056 |
 | Recall (critical) | 0.000 |
 | Recall (useful) | 0.083 |
-| Noise rate | 0.667 |
-| Avg $/PR | $0.0181 |
+| Noise rate | 0.750 |
+| Avg $/PR | $0.0182 |
 
 ## Per-case
 | PR | Repo | Expected | Hits | Misses | Extras | $ |
@@ -28,13 +28,13 @@ Matcher: file + line ±3, plus a label keyword in the body (18 of 18 labels carr
 | #29 | cjunks94/agentic-portfolio | 1 | 0 | 1 | 0 | $0.0151 |
 | #25 | cjunks94/agentic-portfolio | 1 | 0 | 1 | 0 | $0.0203 |
 | #56 | cjunks94/panoptrain | 3 | 0 | 3 | 0 | $0.0921 |
-| #121 | cjunks94/exportee-rails | 3 | 1 | 2 | 1 | $0.0307 |
+| #121 | cjunks94/exportee-rails | 3 | 1 | 2 | 1 | $0.0303 |
 | #101 | cjunks94/exportee-rails | 2 | 0 | 2 | 0 | $0.0118 |
 | #28 | cjunks94/agentic-portfolio | 0 | 0 | 0 | 0 | $0.0047 |
 | #27 | cjunks94/agentic-portfolio | 0 | 0 | 0 | 0 | $0.0058 |
 | #59 | cjunks94/panoptrain | 2 | 0 | 2 | 0 | $0.0136 |
 | #54 | cjunks94/panoptrain | 2 | 0 | 2 | 0 | $0.0369 |
-| #117 | cjunks94/exportee-rails | 3 | 0 | 3 | 1 | $0.0197 |
+| #117 | cjunks94/exportee-rails | 3 | 0 | 3 | 2 | $0.0215 |
 | #69 | cjunks94/resume-improvements | 0 | 0 | 0 | 0 | $0.0777 |
 | #64 | cjunks94/resume-improvements | 0 | 0 | 0 | 0 | $0.0018 |
 | #57 | cjunks94/resume-improvements | 0 | 0 | 0 | 0 | $0.0027 |
@@ -58,10 +58,10 @@ Matcher: file + line ±3, plus a label keyword in the body (18 of 18 labels carr
 - MISS `packages/server/src/services/taf-poller.ts:74` [useful/correctness] Number("") is 0 and passes isFinite, so upstream's empty-string visib (present on 5 overlay groups in the fixture) parses to 0 sm instead of the documented null; needs an explicit blank check before the numeric fallthrough
 
 ### #121 cjunks94/exportee-rails
-- HIT `app/services/sources/salesforce_adapter.rb:45` [useful/performance] `client.query(query).each { |record| rows << normalize_record(record) }` accumulates all records into a Ruby array before returning. For large result sets Restforce paginates automatically but this still buffers everything in memory; the method signature `extract` implies a full-load anyway, but `extract_streaming` delegates here too, losing any chance of lazy enumeration. If the upstream caller can consume an Enumerator, returning `Enumerator::Lazy` or yielding records would avoid unbounded memory use.
+- HIT `app/services/sources/salesforce_adapter.rb:45` [useful/performance] The `extract` method accumulates all Salesforce records into memory via `rows << normalize_record(record)` before returning. For large objects Restforce's `query` returns a lazy-paginated enumerator, so this defeats pagination and can OOM on large result sets. Consider using `client.query_all` with streaming or yielding records rather than collecting them all.
 - MISS `app/services/sources/salesforce_adapter.rb:66` [critical/correctness] explicit api_version: nil overrides Restforce's default in its options merge (concerns/base.rb merge!), so a connection that omits the documented-optional key hits /services/data/v/... and 404s on every call; specs stub Restforce.new so they can't see it
 - MISS `app/services/sources/salesforce_adapter.rb:27` [useful/perf] introspect_schema describes every queryable sobject in a sequential loop: hundreds of HTTP calls per introspection on a stock org, eating the daily API allocation; batch via composite describe or describe lazily
-- EXTRA `app/services/sources/salesforce_adapter.rb:74` [useful/correctness] The `credentials` fallback `connection.connection_config.fetch("credentials", config)` falls back to `config` (the full connection config hash) when no `"credentials"` key exists. Any code that then calls `credentials["username"]` etc. will get `nil` from the top-level config, silently producing a Restforce client built with all-nil credentials instead of raising a clear configuration error.
+- EXTRA `app/services/sources/salesforce_adapter.rb:74` [useful/correctness] The `credentials` fallback `connection.connection_config.fetch('credentials', config)` silently falls back to the entire top-level config hash (which contains `instance_url`, `sandbox`, etc.) if the `credentials` key is absent. Any caller that omits `credentials` will pass the wrong values (e.g., `client_id` from config) to Restforce, and the error will be non-obvious. The fallback should be an empty hash or raise explicitly.
 
 ### #101 cjunks94/exportee-rails
 - MISS `app/controllers/api/v1/base_controller.rb:83` [useful/security] bad_request_with_message renders raw exception.message from ArgumentError; risks leaking internal context (CLAUDE.md: error messages must not leak internal details)
@@ -79,4 +79,5 @@ Matcher: file + line ±3, plus a label keyword in the body (18 of 18 labels carr
 - MISS `app/services/transforms/data_frame_pipeline.rb:100` [useful/security] const_get with widget_name from YAML config can resolve to unintended constants; safer to dispatch via an explicit widget→class hash
 - MISS `app/services/exports/executor.rb:25` [useful/correctness] Polars branch times widget transforms inside the write_ms block while legacy counts them in transform_ms, so the metrics the README advertises for A/B comparison are apples-to-oranges
 - MISS `app/services/transforms/data_frame_pipeline.rb:27` [critical/correctness] DataFrame.new(rows) infers dtypes from the first 100 rows (polars-df N_INFER_DEFAULT); a column that is nil or a different type in those rows and populated later raises a ComputeError and fails the run, order-dependent; pass infer_schema_length: nil or an explicit schema
-- EXTRA `app/services/transforms/data_frame_pipeline.rb:101` [critical/] If `widget_name` does not correspond to a valid constant under `Widgets::Builtins`, `const_get` raises `NameError`, crashing the export run with no recovery path. The comment on line 75 says 'fall back to row-by-row for this one transform' but the rescue of a missing constant is never handled; only recognised-but-unimplemented widgets can safely reach this branch.
+- EXTRA `app/services/transforms/data_frame_pipeline.rb:101` [critical/] If `widget_name` is not a known constant under `Widgets::Builtins`, `const_get` raises `NameError` (not a handled rescue), which will bubble up as an unhandled exception instead of the intended graceful fallback. An unknown widget name from user/config data can crash the export run.
+- EXTRA `app/services/transforms/data_frame_pipeline.rb:25` [useful/] When `rows` is empty, `legacy_write` is called but `mapping_fields` may not be column-ordered against an empty dataset, and crucially the returned hash from `legacy_write` is passed directly as the result — but the caller in executor.rb checks `result[:bytes_written]` against `max_upload_bytes`. If `Destinations::Writers::Csv.write` returns a different shape (or nil), the size check at line 92 will raise `NoMethodError` or silently skip the guard.
