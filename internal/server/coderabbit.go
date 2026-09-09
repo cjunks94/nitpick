@@ -17,12 +17,16 @@ const (
 	defaultCodeRabbitWaitTimeout  = 5 * time.Minute
 	maxCodeRabbitWaitTimeout      = 10 * time.Minute
 	defaultCodeRabbitPollInterval = 15 * time.Second
-	minCodeRabbitPollInterval     = 5 * time.Second
 
 	// Inline comments are kept in preference to top-level ones when the
 	// cap bites; see provider.MaxPriorFindings.
 	maxPriorFindingsInPrompt = provider.MaxPriorFindings
 )
+
+// minCodeRabbitPollInterval floors the poll interval so a misconfigured
+// repo cannot hammer the comments endpoint. A var, not a const, so the wait
+// test can lower it instead of sleeping through the production floor.
+var minCodeRabbitPollInterval = 5 * time.Second
 
 // fetchPriorFindings collects the comments another reviewer has already left
 // on this PR, so nitpick can be told what ground is covered instead of
