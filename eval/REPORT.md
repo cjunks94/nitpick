@@ -15,7 +15,7 @@ Matcher: file + line ±3, plus a label keyword in the body (18 of 18 labels carr
 | Recall (critical) | 0.000 |
 | Recall (useful) | 0.000 |
 | Noise rate | 1.000 |
-| Avg $/PR | $0.0429 |
+| Avg $/PR | $0.0428 |
 
 ## Per-case
 | PR | Repo | Expected | Hits | Misses | Extras | $ |
@@ -28,13 +28,13 @@ Matcher: file + line ±3, plus a label keyword in the body (18 of 18 labels carr
 | #29 | cjunks94/agentic-portfolio | 1 | 0 | 1 | 0 | $0.0971 |
 | #25 | cjunks94/agentic-portfolio | 1 | 0 | 1 | 0 | $0.0855 |
 | #56 | cjunks94/panoptrain | 3 | 0 | 3 | 0 | $0.1296 |
-| #121 | cjunks94/exportee-rails | 3 | 0 | 3 | 1 | $0.0478 |
+| #121 | cjunks94/exportee-rails | 3 | 0 | 3 | 1 | $0.0480 |
 | #101 | cjunks94/exportee-rails | 2 | 0 | 2 | 0 | $0.0244 |
 | #28 | cjunks94/agentic-portfolio | 0 | 0 | 0 | 0 | $0.0195 |
 | #27 | cjunks94/agentic-portfolio | 0 | 0 | 0 | 0 | $0.0108 |
 | #59 | cjunks94/panoptrain | 2 | 0 | 2 | 0 | $0.0459 |
 | #54 | cjunks94/panoptrain | 2 | 0 | 2 | 0 | $0.0639 |
-| #117 | cjunks94/exportee-rails | 3 | 0 | 3 | 2 | $0.0476 |
+| #117 | cjunks94/exportee-rails | 3 | 0 | 3 | 2 | $0.0466 |
 | #69 | cjunks94/resume-improvements | 0 | 0 | 0 | 0 | $0.0789 |
 | #64 | cjunks94/resume-improvements | 0 | 0 | 0 | 0 | $0.0206 |
 | #57 | cjunks94/resume-improvements | 0 | 0 | 0 | 0 | $0.0091 |
@@ -61,7 +61,7 @@ Matcher: file + line ±3, plus a label keyword in the body (18 of 18 labels carr
 - MISS `app/services/sources/salesforce_adapter.rb:45` [useful/perf] extract accumulates entire SOQL result in memory; a multi-million-row Account export would OOM the worker
 - MISS `app/services/sources/salesforce_adapter.rb:66` [critical/correctness] explicit api_version: nil overrides Restforce's default in its options merge (concerns/base.rb merge!), so a connection that omits the documented-optional key hits /services/data/v/... and 404s on every call; specs stub Restforce.new so they can't see it
 - MISS `app/services/sources/salesforce_adapter.rb:27` [useful/perf] introspect_schema describes every queryable sobject in a sequential loop: hundreds of HTTP calls per introspection on a stock org, eating the daily API allocation; batch via composite describe or describe lazily
-- EXTRA `app/services/sources/salesforce_adapter.rb:30` [useful/correctness] If `describe["fields"]` is nil (e.g. Salesforce returns an object description without a fields key), calling `.map` on it will raise `NoMethodError` and bubble out as an unhandled exception rather than the expected `Sources::AdapterError`. A guard like `(describe["fields"] || []).map` would make this safe.
+- EXTRA `app/services/sources/salesforce_adapter.rb:30` [critical/] If a queryable sobject's describe result has a nil or missing `"fields"` key (e.g., a custom object that hasn't been fully deployed, or an unexpected API response), calling `.map` on `nil` will raise a `NoMethodError` that is not caught by the `Restforce::Error, Faraday::Error` rescue block, crashing introspection entirely. A guard like `(describe["fields"] || []).map` is needed.
 
 ### #101 cjunks94/exportee-rails
 - MISS `app/controllers/api/v1/base_controller.rb:83` [useful/security] bad_request_with_message renders raw exception.message from ArgumentError; risks leaking internal context (CLAUDE.md: error messages must not leak internal details)
@@ -79,5 +79,5 @@ Matcher: file + line ±3, plus a label keyword in the body (18 of 18 labels carr
 - MISS `app/services/transforms/data_frame_pipeline.rb:100` [useful/security] const_get with widget_name from YAML config can resolve to unintended constants; safer to dispatch via an explicit widget→class hash
 - MISS `app/services/exports/executor.rb:25` [useful/correctness] Polars branch times widget transforms inside the write_ms block while legacy counts them in transform_ms, so the metrics the README advertises for A/B comparison are apples-to-oranges
 - MISS `app/services/transforms/data_frame_pipeline.rb:27` [critical/correctness] DataFrame.new(rows) infers dtypes from the first 100 rows (polars-df N_INFER_DEFAULT); a column that is nil or a different type in those rows and populated later raises a ComputeError and fails the run, order-dependent; pass infer_schema_length: nil or an explicit schema
-- EXTRA `app/services/transforms/data_frame_pipeline.rb:101` [useful/correctness] If `widget_name.camelize` doesn't match a constant under `Widgets::Builtins`, `const_get` raises `NameError` and bubbles out of the entire pipeline with no rescue. The legacy row-by-row path in `Executor#apply_widgets` has the same gap, so this isn't a regression, but the comment on line 75 says 'fall back to row-by-row for this one transform' implying isolation — a bad widget name actually aborts the whole export run.
-- EXTRA `app/services/transforms/data_frame_pipeline.rb:104` [useful/correctness] When `filter_map` returns an empty array (all rows filtered out by the widget), `df.clear` is returned, which preserves the original schema. But if the first widget in a chain produces an empty DataFrame via `df.clear` and a subsequent widget calls `df.to_hashes`, it returns `[]`, and `Polars::DataFrame.new([])` raises an `ArgumentError` — the chained empty-DataFrame case is not guarded.
+- EXTRA `app/services/transforms/data_frame_pipeline.rb:101` [useful/correctness] If `widget_name` is not a valid constant name or the constant doesn't exist, `const_get` raises `NameError` with no rescue, crashing the entire pipeline run instead of gracefully skipping or logging the unknown widget. The `else` branch comment says "fall back to row-by-row" but there is no error handling around the `const_get` call.
+- EXTRA `app/services/transforms/data_frame_pipeline.rb:31` [useful/correctness] If all `mapping_fields` targets are absent from the DataFrame columns after transforms, `df.select([])` is called, which in Polars raises an error (cannot select zero columns) rather than returning an empty-column frame or the full frame. This would crash on a misconfigured mapping.
