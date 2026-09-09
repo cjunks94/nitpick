@@ -2,25 +2,31 @@
 # All fields are optional. nitpick uses sensible defaults when the file or
 # any field is missing.
 
-provider: anthropic                       # stub | deepseek | anthropic
-model: claude-haiku-4-5                   # used when provider=anthropic
+# Default model. Honored by the `nitpick review` CLI. `nitpick serve` takes
+# its default from the NITPICK_MODEL env var and reads only `review.escalate`
+# from this file. Must be claude-haiku-4-5 or claude-sonnet-4-6.
+model: claude-haiku-4-5
+
+# The provider is chosen by the `--provider` flag (stub | anthropic) on the
+# CLI and is always anthropic on `serve`; it is not a config key.
 
 review:
-  severity_threshold: useful              # nit | useful | critical — post anything >= this
+  # Doublestar globs. Matching files are dropped from the diff before review.
+  # A malformed pattern fails the whole file: the CLI aborts, `serve` logs
+  # ".nitpick.yaml parse failed" and reviews with built-in defaults. A pattern
+  # starting with "**/" also matches root-level files ("**/*.lock" matches
+  # "yarn.lock").
   ignore_paths:
     - "vendor/**"
     - "**/*.lock"
     - "**/*.svg"
     - "**/testdata/**"
-  categories_enabled:
-    - correctness
-    - security
-    - perf
 
   # Model routing. When any reviewed file matches one of these patterns the
-  # PR runs on `model` instead of the top-level default. Sonnet's precision
-  # is roughly triple Haiku's at four times the cost per PR: worth it on a
-  # migration or an auth change, not on a copy tweak.
+  # PR runs on `model` instead of the top-level default. On the 18-label eval
+  # set Sonnet's precision is 0.43 against Haiku's 0.02 at about 2.25x the
+  # cost per PR ($0.018 vs $0.008): worth it on a migration or an auth
+  # change, not on a copy tweak.
   #
   # Matched after ignore_paths, so an ignored file never escalates. Both
   # fields are required together; a half-configured block fails config load.
@@ -68,9 +74,12 @@ review:
   # block. Tell the bot what's specific to THIS repo: language conventions,
   # framework-specific patterns, things the team doesn't want flagged.
   # Keep it short — bullets, not essays. Adding too much dilutes attention.
+  # Truncated at 16 KiB; the whole file is ignored above 32 KiB.
   #
   # When the bot has notes, it treats them as authoritative for this repo
-  # and overrides its general defaults.
+  # and overrides its general defaults. Because of that, `serve` reads this
+  # file from the PR head only for same-repo PRs; fork PRs read the base
+  # branch, and an unknown head origin means no config at all.
   context_notes: |
     Language conventions:
       - GDScript: `class_name X extends Y` declarations are repo-globally

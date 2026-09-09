@@ -91,17 +91,17 @@ const (
 )
 
 // New returns a provider by name. Register new implementations here.
-// modelID is honored only by providers that take a model (anthropic, deepseek);
-// pass "" to use the provider's default.
+// modelID is honored only by providers that take a model (anthropic); pass
+// "" to use the provider's default. Any name not registered here is an
+// error naming the valid set, so a typo (or a provider that only exists on
+// the roadmap, like deepseek) fails at startup rather than mid-review.
 func New(name, modelID string) (Provider, error) {
 	switch name {
 	case "", "stub":
 		return Stub{}, nil
-	case "deepseek":
-		return nil, fmt.Errorf("deepseek provider not yet implemented — see HANDOFF.md")
 	case "anthropic":
 		return NewAnthropic(modelID)
 	default:
-		return nil, fmt.Errorf("unknown provider: %s", name)
+		return nil, fmt.Errorf("unknown provider %q (want stub | anthropic)", name)
 	}
 }

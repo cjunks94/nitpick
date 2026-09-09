@@ -2,7 +2,7 @@
 
 End-to-end guide to running `nitpick serve` as a hosted webhook receiver, then installing it as a GitHub App on selected repos. After this, every PR open / push in a covered repo triggers an automatic review.
 
-**Time**: ~30 minutes start-to-finish. **Cost**: Railway's hobby tier (~$5/mo) + your Anthropic spend (~$0.007/PR on Haiku, ~$0.029 on Sonnet). For a personal account with a few dozen PRs/month, total cost lands under $10/mo.
+**Time**: ~30 minutes start-to-finish. **Cost**: Railway's hobby tier (~$5/mo) + your Anthropic spend (~$0.008/PR on Haiku, ~$0.018 on Sonnet — 3-run means on the eval set, 2026-09-09). For a personal account with a few dozen PRs/month, total cost lands under $10/mo.
 
 **Four pieces**:
 1. **Prerequisites checklist** — what you need before starting
@@ -37,9 +37,9 @@ Settings → Developer settings → GitHub Apps → **New GitHub App**.
 | Webhook URL | _leave blank for now — you'll fill in after Railway gives you a URL_ |
 | Webhook secret | Generate one: `openssl rand -hex 32`. Save it — you'll paste it into Railway env. |
 | **Repository permissions** | |
-| → Contents | **Read-only** (so the App can read the diff) |
-| → Pull requests | **Read and write** (so the App can post reviews) |
-| → Metadata | Read-only (auto-set) |
+| → Contents | **Read-only** — for `.nitpick.yaml` and the context files nitpick fetches through the Contents API. The diff itself comes through the Pull requests permission, not this one. |
+| → Pull requests | **Read and write** — fetches the diff, posts the review, and posts the per-review status comment. The status comment goes through the issue-comments endpoint (`POST /issues/{n}/comments`), which GitHub grants on PRs under this same permission, so no separate Issues permission is needed. |
+| → Metadata | Read-only (auto-set). The `/nitpick` write-access check reads `GET /collaborators/{user}/permission` under it; if Metadata were ever missing that call 403s and every `/nitpick` fails **closed** (`commenter lacks write access` in the logs). |
 | **Subscribe to events** | ✓ Pull request · ✓ Issue comment · ✓ Pull request review · ✓ Pull request review comment |
 | Where can this be installed? | Only on this account |
 
@@ -71,7 +71,7 @@ In the Railway dashboard for the new service:
 | `GITHUB_APP_ID` | from step 1 | Numeric. |
 | `GITHUB_APP_PRIVATE_KEY` | contents of the `.pem` file | Paste the full multi-line PEM including `-----BEGIN/END-----` lines. Railway handles multi-line variables. |
 | `GITHUB_WEBHOOK_SECRET` | the `openssl rand -hex 32` value from step 1 | Same value as on the App. |
-| `NITPICK_MODEL` | _(optional)_ | `claude-sonnet-4-6` if you want higher precision per PR; default Haiku otherwise. |
+| `NITPICK_MODEL` | _(optional)_ | `claude-sonnet-4-6` if you want higher precision per PR; default `claude-haiku-4-5` otherwise. Only those two ids are accepted — any other value makes `serve` exit at startup with `unsupported model`. |
 
 Railway sets `PORT` automatically — don't override.
 
@@ -126,7 +126,7 @@ The PR should now have a `nitpick` review comment with inline findings.
 
 ## Manually re-triggering a review
 
-Type **`/nitpick`** (case-insensitive substring) anywhere a human can type text on a PR and nitpick will run a fresh review:
+Type **`/nitpick`** at the start of a line (case-insensitive; leading whitespace allowed; anything may follow, e.g. `/nitpick please`) anywhere a human can type text on a PR and nitpick will run a fresh review. It must start a line: a mid-sentence mention, a link to `github.com/cjunks94/nitpick`, or a quoted `> /nitpick` does not fire.
 
 | Where you can put `/nitpick` | GitHub event nitpick listens to |
 |---|---|
@@ -140,7 +140,7 @@ Useful when:
 - A previous review was silent and you suspect it shouldn't be
 - You're mid-review on a specific line and want the bot to also look
 
-Comment-triggered reviews **bypass the head-SHA dedup** (the user is explicitly asking) but still respect the skip rules for drafts, bot authors, and oversize PRs. Watch Railway logs for `comment trigger fired` with `"trigger":"comment"|"inline-comment"|"review-body"` followed by the usual `review complete` line.
+Comment-triggered reviews **bypass the head-SHA dedup** (the user is explicitly asking) but still respect the skip rules for drafts, bot authors, and oversize PRs. Two more gates apply only to comment triggers: **the commenter needs write access** on the repo (checked per trigger, fails closed if the permission can't be read — without it anyone able to comment on a public repo's PR could spend your Anthropic key), and a **60s per-PR cooldown** stops trigger spam; an unauthorized commenter doesn't consume the cooldown slot. Watch Railway logs for `comment trigger fired` with `"trigger":"comment"|"inline-comment"|"review-body"` followed by the usual `review complete` line.
 
 **Requires**: the GitHub App must be subscribed to **Issue comment**, **Pull request review**, and **Pull request review comment** events. If you set up the App before this version of the guide, go to App settings → **Subscribe to events** → tick all three and save.
 
@@ -148,9 +148,12 @@ Comment-triggered reviews **bypass the head-SHA dedup** (the user is explicitly 
 
 - **Cost ceiling per PR**: built-in skip at 1000 added+deleted lines. Edit `MaxLinesPerPR` in `internal/server/webhook.go` to change.
 - **Spend ceiling**: rolling $5/hour across all installations, plus 4 concurrent reviews and a 32-deep queue that sheds beyond that. In-memory, so it resets on restart — a fail-safe, not accounting. Tune via `MaxSpendPerHourUSD` on the `Handler`.
-- **`/nitpick` requires write access** on the repo, plus a 60s per-PR cooldown. Without that gate, anyone able to comment on a public repo's PR could spend your Anthropic key.
-- **Skips by default**: drafts, dependabot, renovate, anything from `Type: Bot` accounts, and PRs the server already reviewed at the same head SHA within the last hour.
+- **Skips by default**: drafts, dependabot, renovate, anything from `Type: Bot` accounts, and PRs the server already reviewed at the same head SHA within the last hour. `/nitpick` triggers add a write-access check and a cooldown — see "Manually re-triggering a review" above.
 - **Dedup is in-memory**: lost on restart. If Railway redeploys mid-PR, the next push will trigger a fresh review. Add persistence (Postgres) only if duplicate posts become a real problem.
+- **Webhook redelivery**: GitHub will retry on non-2xx. We respond 202 fast and process async — even a 30s LLM review doesn't risk a retry.
+- **Logs**: structured JSON to stdout (`log/slog`). Railway parses these into searchable fields.
+- **Updating**: `git push` to main; Railway redeploys automatically if you connected the GitHub source. Tag a release (`git tag v0.x.y`) only for milestone snapshots — Railway doesn't track tags.
+- **Rolling back**: Railway keeps previous deployments; redeploy the last good one from the service's Deployments list. The server is stateless (no database, no migrations), so a rollback is just the older image.
 
 ### ⚠️ Set a draining window or the graceful shutdown does nothing
 
@@ -163,9 +166,6 @@ nitpick returns `202` immediately and runs the review in a detached goroutine, t
 - `railway.json`: `"deploy": { "drainingSeconds": 60 }`
 
 Verify it took by redeploying while a review is in flight and looking for `all in-flight reviews completed` in the logs. If you instead see the process vanish with no `shutdown complete` line, the window isn't configured.
-- **Webhook redelivery**: GitHub will retry on non-2xx. We respond 202 fast and process async — even a 30s LLM review doesn't risk a retry.
-- **Logs**: structured JSON to stdout (`log/slog`). Railway parses these into searchable fields.
-- **Updating**: `git push` to main; Railway redeploys automatically if you connected the GitHub source. Tag a release (`git tag v0.x.y`) only for milestone snapshots — Railway doesn't track tags.
 
 ---
 
@@ -206,4 +206,4 @@ Once that works end-to-end, repeat steps 2–4 above (Railway deploy + point web
 | `HTTP 422` on `PostReview` | The PR head moved between fetch and post (someone pushed again); the next webhook will fire. Findings the model anchors outside the diff are dropped before posting (`findings_dropped_unanchored` in the log), so a 422 no longer means one bad line number lost the whole review. |
 | Railway build fails on `go: downloading ...` | Network blip during build; redeploy. If persistent, check Railway's status page. |
 | Webhook arrives but logs show `skip reason=user_type=Bot` | A non-human opened the PR (CodeRabbit, dependabot). nitpick skips bot accounts by default — adjust `SkipUserLogins` in `internal/server/webhook.go` if you want different behavior. |
-| Container restarts immediately after deploy | Almost always missing env var. Logs will say `missing required config`. Double-check all 4 required vars are set in Railway. |
+| Container restarts immediately after deploy | Almost always missing env var. Logs will say `missing required config` (one of the three GitHub vars) or `ANTHROPIC_API_KEY is required`. Double-check all 4 required vars are set in Railway. |

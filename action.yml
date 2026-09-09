@@ -12,16 +12,13 @@ inputs:
     required: false
     default: ${{ github.repository }}
   provider:
-    description: 'stub | deepseek | anthropic'
+    description: 'stub | anthropic'
     required: false
     default: 'anthropic'
   dry-run:
     description: 'Print findings to logs instead of posting to the PR'
     required: false
     default: 'false'
-  deepseek-api-key:
-    description: 'DeepSeek API key (required when provider=deepseek)'
-    required: false
   anthropic-api-key:
     description: 'Anthropic API key (required when provider=anthropic)'
     required: false
@@ -40,7 +37,6 @@ runs:
     - --dry-run=${{ inputs.dry-run }}
   env:
     GITHUB_TOKEN: ${{ github.token }}
-    DEEPSEEK_API_KEY: ${{ inputs.deepseek-api-key }}
     ANTHROPIC_API_KEY: ${{ inputs.anthropic-api-key }}
 
 branding:

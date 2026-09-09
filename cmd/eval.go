@@ -14,7 +14,7 @@ import (
 func Eval(ctx context.Context, args []string) error {
 	flags := flag.NewFlagSet("eval", flag.ContinueOnError)
 	casesPath := flags.String("cases", "eval/cases/cases.jsonl", "path to cases.jsonl")
-	providerName := flags.String("provider", "stub", "stub | deepseek | anthropic")
+	providerName := flags.String("provider", "stub", "stub | anthropic")
 	model := flags.String("model", "", "model id override (anthropic: claude-haiku-4-5 default, claude-sonnet-4-6 escalation)")
 	outPath := flags.String("out", "eval/REPORT.md", "report output path")
 	guidelines := flags.Bool("guidelines", false, "load per-repo CLAUDE.md from eval/cases/repos/ as cached context (opt-in; default off after 3v3 A/B showed no win)")

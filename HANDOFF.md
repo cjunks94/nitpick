@@ -2,7 +2,7 @@
 
 State snapshot at v0.2.0, plus the v0.3 work listed under "Shipped since this snapshot" below. This doc tells the next person (or future-you) what shipped, what was tried and reverted, and what's left.
 
-> **This file has drifted before.** The sections below the snapshot were written at v0.2.0 and describe a smaller system than the one in `main`. Trust the code over this doc where they disagree; `README.md` is kept current. When you finish substantial work, append to the list below rather than editing the v0.2.0 body.
+> **This file has drifted before.** The sections below the snapshot were written at v0.2.0 and describe a smaller system than the one in `main`. Trust the code over this doc where they disagree; `README.md` is kept current (last re-verified line-by-line against the code on 2026-09-09, GH-30). When you finish substantial work, append to the list below rather than editing the v0.2.0 body.
 
 ## Shipped since this snapshot
 
@@ -18,6 +18,8 @@ State snapshot at v0.2.0, plus the v0.3 work listed under "Shipped since this sn
 - **Model routing** (the v0.3.0 item below — done, 2026-09-08). `review.escalate: {model, paths}` in `.nitpick.yaml`; any reviewed file matching a pattern runs the PR on the escalation model. Decision is `config.Config.ModelFor` (pure, tested), applied after `ignore_paths` on both `serve` and the CLI. `serve` builds escalation providers through `Handler.ProviderForModel` (a memoized `provider.New`); a bad model id logs and falls back to the default rather than skipping the review. Escalation is visible in the status comment via the provider name. Also closed GH-2 (listener had only `ReadHeaderTimeout`; now read/write/idle are set and asserted by a test).
 - **#101 SDK probe** (2026-09-09). One Sonnet sweep each on anthropic-sdk-go 1.70.1 and 1.45.0; #101 absent on both, so PR #9 is cleared. Details in the results section.
 - **Label set 7 -> 18** (2026-09-09, PR #24). Re-baselined both models; see the results table and the paragraph under it. Haiku is at the noise floor on this set.
+- **CI** — `.github/workflows/security.yml`: build + `go vet` + `go test -race -coverprofile` (Codecov upload, non-blocking), govulncheck, gosec, gitleaks; on every push to `main`, every PR, and a Monday cron. `.github/dependabot.yml` opens weekly grouped PRs for gomod and github-actions. `-race` runs only in CI (no cgo on the Windows dev box). No coverage threshold yet.
+- **Docs drift pass** (2026-09-09, GH-30). Removed the never-read `provider`, `review.severity_threshold`, and `review.categories_enabled` config keys and the advertised-but-unimplemented `deepseek` provider option; README reorganised under the parent's headings; `docs/adr/` created from the decision table.
 
 ### Security fixes worth not regressing
 
@@ -44,7 +46,7 @@ Still open from that review (low severity, documented not fixed):
 ### v0.1.0 — CLI + eval harness
 - **Repo skeleton + diff parser + gh CLI wrapper + stub provider** (commit `8b438c8`). Diff parser tracks both modern `NewLineNum` and legacy `DiffPosition`.
 - **Eval harness** (`internal/eval/runner.go`). Loads `cases.jsonl`, runs a provider against each case, writes `REPORT.md` with precision / recall / noise rate / cost. Per-PR error isolation so one bad LLM response doesn't tank a 20-PR sweep.
-- **20 labeled PR cases** across `resume-improvements` / `panoptrain` / `agentic-portfolio` / `hush-hush` / `exportee-rails`. 5 bug fixes, 5 features, 5 refactors, 5 chores. 7 expected findings.
+- **20 labeled PR cases** across `resume-improvements` / `panoptrain` / `agentic-portfolio` / `hush-hush` / `exportee-rails`. 5 bug fixes, 5 features, 5 refactors, 5 chores. 7 expected findings at the time; 18 since 2026-09-09 (PR #24).
 - **Anthropic provider** with prompt caching support (commit `6c4bb68`). Single-shot call, defaults to `claude-haiku-4-5`, escalation to `claude-sonnet-4-6` via `--model` flag. Defensive JSON parser handles fenced output, prose-only responses (silent review), `line` as string, and line ranges like `"541-543"`.
 - **Inline-anchoring verification** via PR #1 (commit `3ca2a9e`). nitpick reviewed its own bait file (`internal/ghc/repoarg.go`), caught the contract-drift bug, fix landed in the same PR, squash-merged. GitHub's modern `line` + `side=RIGHT` review-comment API works as designed.
 
@@ -78,7 +80,7 @@ Three-run mean per config against the 20 labeled PRs (Haiku v2 prompt; same prom
 | Haiku v2.8, keyword matcher, gate for PR #22 (3 runs, 2026-09-08) | 16.3 | 0.02 | 0.05 | 0.05 | 0.98 | 0.03 | $0.008 |
 | Sonnet 4.6 v2.8, keyword matcher, SDK probe (2 runs, 2026-09-09) | 4.5 | 0.23 | 0.14 | 0.14 | 0.78 | 0.17 | $0.018 |
 
-Sonnet has the highest F1 (precision-driven) at ~4× Haiku cost. Haiku has the highest useful_recall at $0.007/PR. Both beat the stub floor on F1 by a lot.
+On the v2 rows Sonnet had the highest F1 (precision-driven) at ~4× Haiku cost and Haiku the highest useful recall at $0.007/PR. On the current 18-label rows Sonnet is precision 0.43 / F1 0.20 at $0.018 against Haiku's 0.02 / 0.02 at $0.008 (about 2.25× the cost), and Haiku is at the noise floor. Sonnet still beats the stub floor by a lot; Haiku no longer meaningfully does on this set.
 
 v2.8 gate (2026-09-02): Sonnet F1 0.33 → 0.42 on recall(all), precision 0.39 → 0.46, noise 0.61 → 0.54, and the lost #101 finding is back. Haiku moved 0.27 → 0.22 on F1, driven by the #87 line-collision artifact described above; its six v2.8 runs span recall 0.29–0.43, which brackets the v2.7 mean. Shipped on the strength of the production model.
 
@@ -94,7 +96,7 @@ Metric quirk surfaced by run 1: Recall (useful) counts hits by the *model's* sev
 
 Label set expanded 7 -> 18 (2026-09-09, PR #24). Eleven labels added across #25, #54, #56, #59, #101, #117, #121; ten cases stay silent. `eval/LABEL-CANDIDATES.md` records how each was verified and which recurring model complaints are deliberately not labels. Rows above this date are on the 7-label denominator and are not comparable to rows below it. Re-baseline under the new set: Sonnet hit 2 / 3 / 2 of 18 (#121:45 and #101:83 in every run, the new #121:27 N+1 describe once); Haiku hit 1 / 0 / 0. Two readings. First, Haiku is at the noise floor on this label set and its per-run numbers should not gate anything; near-miss analysis shows its comments near labeled lines are different complaints (the #117 NameError, a nil-dict remark on #25), not keyword rejections. Second, none of the nine new labels outside exportee-rails were found by either model in any run, even the two later fixed upstream with the exact bug in the fix commit message (#54 trackInterpolation.ts:95, #54 useTrainFeatures.ts:94). These are cross-file state bugs, which is the recall ceiling the multi-file-context item below was written for. Also worth noting without explaining: #101 came back 3 of 3 after 0 of 5, with no change to anything the model sees, which is the clearest evidence yet that single-label swings are variance.
 
-Two lessons worth keeping: (1) **prompt length is a tuning variable** — on a silence-first prompt every added prohibition costs recall, so compress before appending; (2) **the matcher is file+line only**, so a hit can be a different finding on the same line. `eval/REPORT.md` now has a Detail section (PR #14) listing the body of every hit; read it before trusting a recall number that moved by one finding.
+Two lessons worth keeping: (1) **prompt length is a tuning variable** — on a silence-first prompt every added prohibition costs recall, so compress before appending; (2) **the matcher was file+line only** until 2026-09-08, so a hit could be a different finding on the same line; it is now file+line±3 plus a label keyword in the body (see "Eval matcher keywords" above). `eval/REPORT.md` now has a Detail section (PR #14) listing the body of every hit; read it before trusting a recall number that moved by one finding.
 
 v2.7 re-baseline (three runs each, 2026-09-02): Haiku is unchanged within noise — same useful recall, slightly fewer findings, slightly better precision. Sonnet regressed: run 1 matched the v2 numbers exactly (0.50 / 0.29), runs 2 and 3 each missed one more labeled finding (0.33 / 0.14). With 7 expected findings one miss is 0.14 of recall, so this is suggestive, not conclusive — but it is the direction the v2.4/v2.5 loosening would predict, and worth a targeted look at which case flipped before any further prompt work. Sonnet's $/PR fell from $0.029 to $0.019, most likely shorter outputs.
 
@@ -110,7 +112,9 @@ These are in the git log; don't re-do them.
 ### ~~v0.3.0 — Model routing~~ — shipped 2026-09-08, see "Shipped since this snapshot"
 Path-based `review.escalate`. Not done: escalation on PR *size* or on labels, and a per-installation default model. Both are small additions to `ModelFor` if wanted.
 
-### v0.3.x — Multi-file context (recall ceiling)
+### ~~v0.3.x — Multi-file context (recall ceiling)~~ — shipped, see "Shipped since this snapshot"
+Shipped as `fetchContextFiles` in `internal/server/webhook.go`: up to 5 diff-referenced files at the head SHA, 60 KiB per file, 200 KiB total, deny-listed and change-weight-sorted. The 18-label re-baseline shows the cross-file labels are still missed by both models, so the ceiling moved less than the paragraph below hoped. Original rationale kept for the record:
+
 The Sonnet useful_recall plateau of 0.29 across all 3 runs suggests the same labeled findings get missed every time — they likely need cross-file context to spot. AsyncReview-inspired: before the LLM call, fetch the 2–3 files most referenced by the diff (imports, callers). Adds tokens (cost up) but should lift recall on the structurally-coupled findings.
 
 ### v0.3.x — DeepSeek provider
@@ -137,7 +141,7 @@ OpenAI-compatible API at ~$0.14/1M input vs Haiku's $1.00. If quality is compara
 ## Open questions worth raising
 
 - Should the LLM provider call `client.messages.parse()` with a JSON schema instead of free-form JSON + defensive parsing? Would eliminate the parser-fix hot loop. Trade-off: vendor lock to Anthropic's structured-output API.
-- Cost ceiling per PR — fail-safe at $X/PR before invoking the LLM? Currently soft-gated by `MaxLinesPerPR` only.
+- Cost ceiling per PR — fail-safe at $X/PR before invoking the LLM? Currently soft-gated by `MaxLinesPerPR` and the rolling hourly spend ceiling ($5/h across all installations); neither is per-PR.
 - Multi-line inline comments (`start_line` + `line`) in v0.3 or single-line only? Sonnet's line ranges suggest the model wants to do multi-line; we currently flatten to first line.
 
 ## Pointers to other repos

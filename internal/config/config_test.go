@@ -15,22 +15,14 @@ func TestParse(t *testing.T) {
 		{
 			name: "full config",
 			yaml: `
-provider: anthropic
 model: claude-sonnet-4-6
 review:
-  severity_threshold: critical
   context_notes: |
     GDScript: class_name is repo-globally resolved.
 `,
 			check: func(t *testing.T, c Config) {
-				if c.Provider != "anthropic" {
-					t.Errorf("Provider = %q", c.Provider)
-				}
 				if c.Model != "claude-sonnet-4-6" {
 					t.Errorf("Model = %q", c.Model)
-				}
-				if c.Review.SeverityThreshold != "critical" {
-					t.Errorf("SeverityThreshold = %q", c.Review.SeverityThreshold)
 				}
 				if c.Review.ContextNotes == "" {
 					t.Error("ContextNotes should be populated")
@@ -41,11 +33,8 @@ review:
 			name: "empty yaml uses defaults",
 			yaml: ``,
 			check: func(t *testing.T, c Config) {
-				if c.Provider != "stub" {
-					t.Errorf("default Provider = %q, want stub", c.Provider)
-				}
-				if c.Review.SeverityThreshold != "nit" {
-					t.Errorf("default SeverityThreshold = %q, want nit", c.Review.SeverityThreshold)
+				if c.Model != "" {
+					t.Errorf("default Model = %q, want empty (provider default)", c.Model)
 				}
 				if c.Review.ContextNotes != "" {
 					t.Errorf("default ContextNotes should be empty, got %q", c.Review.ContextNotes)
@@ -53,8 +42,30 @@ review:
 			},
 		},
 		{
+			// `provider`, `severity_threshold`, and `categories_enabled` were
+			// parsed and never read, then removed. Files in the wild still
+			// carry them; they must load, not fail.
+			name: "removed keys are ignored, not rejected",
+			yaml: `
+provider: anthropic
+model: claude-haiku-4-5
+review:
+  severity_threshold: useful
+  categories_enabled: [correctness, security]
+  ignore_paths: ["vendor/**"]
+`,
+			check: func(t *testing.T, c Config) {
+				if c.Model != "claude-haiku-4-5" {
+					t.Errorf("Model = %q", c.Model)
+				}
+				if len(c.Review.IgnorePaths) != 1 {
+					t.Errorf("IgnorePaths = %v, want the one pattern", c.Review.IgnorePaths)
+				}
+			},
+		},
+		{
 			name:    "malformed yaml returns error",
-			yaml:    "provider: anthropic\nreview: [this is not a map",
+			yaml:    "model: claude-haiku-4-5\nreview: [this is not a map",
 			wantErr: true,
 		},
 		{
@@ -109,9 +120,9 @@ review:
 
 func TestParse_CodeRabbitDefaults(t *testing.T) {
 	// An empty config, or one that omits the coderabbit block entirely, must
-	// leave dedup ON — it costs one GitHub call and is the whole point of the
-	// interop. Only `wait` is opt-in.
-	for _, in := range []string{``, "review:\n  severity_threshold: useful\n"} {
+	// leave dedup ON — it costs two GitHub calls and is the whole point of
+	// the interop. Only `wait` is opt-in.
+	for _, in := range []string{``, "review:\n  ignore_paths: [\"vendor/**\"]\n"} {
 		cfg, err := Parse([]byte(in))
 		if err != nil {
 			t.Fatalf("Parse(%q) error: %v", in, err)
@@ -262,7 +273,7 @@ review:
 
 	t.Run("escalate model empty when default is empty still returns empty", func(t *testing.T) {
 		// Provider treats "" as its own default; ModelFor must not invent one.
-		cfg, err := Parse([]byte("provider: anthropic\n"))
+		cfg, err := Parse([]byte("review: {}\n"))
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -20,7 +20,7 @@ func Review(ctx context.Context, args []string) error {
 	flags := flag.NewFlagSet("review", flag.ContinueOnError)
 	pr := flags.Int("pr", 0, "PR number (required)")
 	repo := flags.String("repo", "", "owner/name (defaults to gh-detected)")
-	providerName := flags.String("provider", "stub", "stub | deepseek | anthropic")
+	providerName := flags.String("provider", "stub", "stub | anthropic")
 	configPath := flags.String("config", ".nitpick.yaml", "config path")
 	dryRun := flags.Bool("dry-run", false, "print findings to stdout instead of posting")
 	if err := flags.Parse(args); err != nil {
