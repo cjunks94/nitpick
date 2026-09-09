@@ -2,12 +2,15 @@ package server
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"regexp"
 	"syscall"
 	"time"
 
@@ -136,14 +139,50 @@ const (
 	reviewDrainGrace = 45 * time.Second
 )
 
-// withRequestLogging logs every request at INFO with method, path, status,
-// and duration. Lightweight — skipping the full request-ID-middleware
-// pattern (X-Request-ID echo, regex validation) since GitHub already sends
-// X-GitHub-Delivery which serves the same correlation purpose; the webhook
-// handler attaches that to its own log context.
+// requestIDRE bounds what an inbound correlation id may look like before it
+// is echoed and logged: alphanumerics, dash, underscore, at most 128 bytes.
+// Anything else is replaced rather than sanitised, so a hostile header cannot
+// put newlines or terminal escapes into the log stream or the response.
+var requestIDRE = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,128}$`)
+
+type requestIDKey struct{}
+
+// RequestID returns the correlation id withRequestLogging resolved for this
+// request, or "" outside the middleware.
+func RequestID(ctx context.Context) string {
+	v, _ := ctx.Value(requestIDKey{}).(string)
+	return v
+}
+
+// rngFailedRequestID is the sentinel used when the random source fails, so
+// the request's log lines still share one recognisable id.
+const rngFailedRequestID = "rng-failed"
+
+// resolveRequestID picks the id for a request: a valid inbound X-Request-ID
+// first (so platform and CDN traces flow end to end), then GitHub's own
+// X-GitHub-Delivery, else a fresh random id.
+func resolveRequestID(r *http.Request) string {
+	for _, name := range []string{"X-Request-ID", "X-GitHub-Delivery"} {
+		if v := r.Header.Get(name); requestIDRE.MatchString(v) {
+			return v
+		}
+	}
+	var b [12]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return rngFailedRequestID
+	}
+	return hex.EncodeToString(b[:])
+}
+
+// withRequestLogging resolves a request id, echoes it in X-Request-ID, puts
+// it on the context for handlers to log with, and logs every request at
+// INFO with method, path, status, and duration under that id.
 func withRequestLogging(next http.Handler, logger *slog.Logger) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
+		id := resolveRequestID(r)
+		w.Header().Set("X-Request-ID", id)
+		r = r.WithContext(context.WithValue(r.Context(), requestIDKey{}, id))
 		sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(sw, r)
 		// Don't log /healthz — Railway hits it constantly.
@@ -151,6 +190,7 @@ func withRequestLogging(next http.Handler, logger *slog.Logger) http.Handler {
 			return
 		}
 		logger.Info("http",
+			"request_id", id,
 			"method", r.Method,
 			"path", r.URL.Path,
 			"status", sw.status,

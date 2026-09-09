@@ -1,0 +1,12 @@
+version: "2"
+
+linters:
+  settings:
+    errcheck:
+      # Writes to an io.Writer we own (stdout, a bufio.Writer that is
+      # flushed and checked at the end) are not worth a line each.
+      # Close() and network reads stay checked.
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln

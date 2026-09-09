@@ -517,9 +517,29 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "POST only", http.StatusMethodNotAllowed)
 		return
 	}
+	// Run refuses to start without a secret, but a struct-literal Handler
+	// can reach here with an empty one, and HMAC over "" verifies anything
+	// signed with "". Fail closed rather than serve an unauthenticated hook.
+	if h.WebhookSecret == "" {
+		h.Logger.Error("webhook secret not configured; refusing delivery")
+		http.Error(w, "server misconfigured", http.StatusInternalServerError)
+		return
+	}
 	deliveryID := r.Header.Get("X-GitHub-Delivery")
+	if !requestIDRE.MatchString(deliveryID) {
+		deliveryID = "invalid"
+	}
 	event := r.Header.Get("X-GitHub-Event")
 	log := h.Logger.With("delivery_id", deliveryID, "event", event)
+	if id := RequestID(r.Context()); id != "" && id != deliveryID {
+		log = log.With("request_id", id)
+	}
+	// No replay guard keyed on the delivery id, deliberately: GitHub reuses
+	// the same GUID when an operator redelivers a webhook from the UI, and
+	// redelivery is the recovery path for a review that was shed or failed
+	// before the provider ran. The head-SHA dedup and the trigger cooldown
+	// bound automatic duplicates; a captured signed payload needs TLS to
+	// Railway broken first.
 
 	body, err := io.ReadAll(io.LimitReader(r.Body, 5<<20)) // 5 MiB cap
 	if err != nil {

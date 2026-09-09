@@ -1,0 +1,14 @@
+# Build context for the Dockerfile. Keep secrets, git history, and the
+# eval corpus out of the image layers; only go.mod/go.sum and source
+# are needed.
+.env
+.env.*
+.git
+.github
+.claude
+docs/
+eval/
+*.md
+nitpick
+nitpick.exe
+coverage.out
