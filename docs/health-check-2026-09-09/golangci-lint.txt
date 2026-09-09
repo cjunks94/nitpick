@@ -1,0 +1,38 @@
+internal\eval\runner.go:103:17: Error return value of `out.Close` is not checked (errcheck)
+	defer out.Close()
+	               ^
+internal\eval\runner.go:161:15: Error return value of `f.Close` is not checked (errcheck)
+	defer f.Close()
+	             ^
+internal\eval\runner.go:220:13: Error return value of `fmt.Fprintf` is not checked (errcheck)
+	fmt.Fprintf(w, "# Eval report — `%s`\n\n", providerName)
+	           ^
+internal\eval\runner.go:221:13: Error return value of `fmt.Fprintf` is not checked (errcheck)
+	fmt.Fprintf(w, "Cases: %d  ·  Expected findings: %d  ·  Produced: %d\n\n",
+	           ^
+internal\eval\runner.go:223:13: Error return value of `fmt.Fprintf` is not checked (errcheck)
+	fmt.Fprintf(w, "Matcher: file + line ±3, plus a label keyword in the body (%d of %d labels carry keywords)\n\n",
+	           ^
+internal\eval\runner.go:225:14: Error return value of `fmt.Fprintln` is not checked (errcheck)
+	fmt.Fprintln(w, "| Metric | Value |")
+	            ^
+internal\eval\runner.go:226:14: Error return value of `fmt.Fprintln` is not checked (errcheck)
+	fmt.Fprintln(w, "|---|---|")
+	            ^
+internal\eval\runner.go:233:14: Error return value of `fmt.Fprintln` is not checked (errcheck)
+	fmt.Fprintln(w)
+	            ^
+internal\ghapp\install.go:73:23: Error return value of `resp.Body.Close` is not checked (errcheck)
+	defer resp.Body.Close()
+	                     ^
+internal\ghc\httpclient.go:136:23: Error return value of `resp.Body.Close` is not checked (errcheck)
+	defer resp.Body.Close()
+	                     ^
+internal\ghc\httpclient.go:228:23: Error return value of `resp.Body.Close` is not checked (errcheck)
+	defer resp.Body.Close()
+	                     ^
+main.go:47:12: Error return value of `fmt.Fprint` is not checked (errcheck)
+	fmt.Fprint(w, `nitpick — self-hosted AI code review for GitHub pull requests
+	          ^
+12 issues:
+* errcheck: 12
