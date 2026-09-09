@@ -18,7 +18,6 @@ import (
 
 	"github.com/cjunks94/nitpick/internal/config"
 	"github.com/cjunks94/nitpick/internal/diff"
-	"github.com/cjunks94/nitpick/internal/ghapp"
 	"github.com/cjunks94/nitpick/internal/ghc"
 	"github.com/cjunks94/nitpick/internal/provider"
 	"github.com/cjunks94/nitpick/internal/secrets"
@@ -191,11 +190,19 @@ const (
 	spendWindow = time.Hour
 )
 
+// TokenSource mints installation tokens. *ghapp.InstallationTokenSource is
+// the production implementation; tests substitute a fake so the goroutine
+// bodies (reviewPR, handleCommentTriggerAsync) are reachable with a fake
+// GitHub behind them.
+type TokenSource interface {
+	Token(ctx context.Context, installationID int64) (string, error)
+}
+
 // Handler owns the dependencies the webhook handler needs to do its work.
 // Constructed once at server startup and shared across requests.
 type Handler struct {
 	WebhookSecret string
-	TokenSource   *ghapp.InstallationTokenSource
+	TokenSource   TokenSource
 	Provider      provider.Provider
 	// ProviderForModel builds the provider for a repo's review.escalate
 	// model. Nil disables escalation (reviews log a warning and use
@@ -251,6 +258,12 @@ type Handler struct {
 	spendMu sync.Mutex
 	spend   []spendEntry
 
+	// Test seams, defaulted by ensureInit / clock. newGitHubClient lets a
+	// test point the review at an httptest server; now lets it step the
+	// spend window, cooldown, and dedup TTL without sleeping.
+	newGitHubClient func(token string) *ghc.HTTPClient
+	now             func() time.Time
+
 	// sem bounds concurrent reviews; queued counts goroutines parked on it.
 	sem      chan struct{}
 	queuedMu sync.Mutex
@@ -293,7 +306,19 @@ func (h *Handler) ensureInit() {
 		if h.Logger == nil {
 			h.Logger = slog.New(slog.NewJSONHandler(io.Discard, nil))
 		}
+		if h.newGitHubClient == nil {
+			h.newGitHubClient = ghc.NewHTTPClient
+		}
 	})
+}
+
+// clock is the handler's view of wall time. Nil-safe so the ledger and
+// cooldown helpers work on a bare struct literal without ensureInit.
+func (h *Handler) clock() time.Time {
+	if h.now == nil {
+		return time.Now()
+	}
+	return h.now()
 }
 
 // maxLines, cooldown, and spendCap resolve the exported knobs: zero is the
@@ -334,7 +359,7 @@ type spendEntry struct {
 	repo string
 }
 
-func NewHandler(secret string, ts *ghapp.InstallationTokenSource, p provider.Provider, logger *slog.Logger) *Handler {
+func NewHandler(secret string, ts TokenSource, p provider.Provider, logger *slog.Logger) *Handler {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Handler{
 		WebhookSecret:      secret,
@@ -429,7 +454,7 @@ func (h *Handler) goReview(log *slog.Logger, fn func(context.Context)) bool {
 func (h *Handler) recordSpend(repo string, usd float64) {
 	h.spendMu.Lock()
 	defer h.spendMu.Unlock()
-	now := time.Now()
+	now := h.clock()
 	h.spend = append(h.spend, spendEntry{at: now, usd: usd, repo: repo})
 	kept := h.spend[:0]
 	for _, e := range h.spend {
@@ -444,7 +469,7 @@ func (h *Handler) recordSpend(repo string, usd float64) {
 func (h *Handler) spentLastHour() float64 {
 	h.spendMu.Lock()
 	defer h.spendMu.Unlock()
-	now := time.Now()
+	now := h.clock()
 	total := 0.0
 	for _, e := range h.spend {
 		if now.Sub(e.at) < spendWindow {
@@ -477,7 +502,7 @@ func (h *Handler) triggerCooledDown(repo string, pr int) (bool, time.Duration) {
 	key := fmt.Sprintf("%s|%d", repo, pr)
 	h.cooldownMu.Lock()
 	defer h.cooldownMu.Unlock()
-	now := time.Now()
+	now := h.clock()
 	if last, ok := h.lastTrigger[key]; ok {
 		if remaining := cd - now.Sub(last); remaining > 0 {
 			return false, remaining
@@ -801,7 +826,7 @@ func (h *Handler) handleCommentTriggerAsync(parent context.Context, log *slog.Lo
 		release()
 		return
 	}
-	client := ghc.NewHTTPClient(token)
+	client := h.newGitHubClient(token)
 
 	// Authorize the commenter before doing anything that costs money.
 	//
@@ -927,7 +952,7 @@ func (h *Handler) claimDedup(key string) (release func(), ok bool) {
 	h.ensureInit()
 	h.dedupeMu.Lock()
 	defer h.dedupeMu.Unlock()
-	now := time.Now()
+	now := h.clock()
 	if t, seen := h.seen[key]; seen && now.Sub(t) < dedupTTL {
 		return func() {}, false
 	}
@@ -1026,7 +1051,7 @@ func (h *Handler) reviewPR(parent context.Context, log *slog.Logger, t reviewTar
 		release()
 		return
 	}
-	client := ghc.NewHTTPClient(token)
+	client := h.newGitHubClient(token)
 
 	raw, err := client.FetchDiff(ctx, repo, prNum)
 	if err != nil {
