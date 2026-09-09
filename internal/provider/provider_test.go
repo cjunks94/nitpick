@@ -68,11 +68,12 @@ func TestNew(t *testing.T) {
 			t.Errorf("New(%q).Name() = %q, want stub", name, p.Name())
 		}
 	}
-	if _, err := New("deepseek", ""); err == nil || !strings.Contains(err.Error(), "not yet implemented") {
-		t.Errorf("New(deepseek) = %v, want a not-implemented error", err)
-	}
-	if _, err := New("openai", ""); err == nil || !strings.Contains(err.Error(), "unknown provider") {
-		t.Errorf("New(openai) = %v, want an unknown-provider error", err)
+	// deepseek was advertised as a placeholder and removed in #30; it is now
+	// just another unknown name.
+	for _, name := range []string{"deepseek", "openai"} {
+		if _, err := New(name, ""); err == nil || !strings.Contains(err.Error(), "unknown provider") {
+			t.Errorf("New(%s) = %v, want an unknown-provider error", name, err)
+		}
 	}
 	p, err := New("anthropic", "")
 	if err != nil {
