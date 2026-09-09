@@ -13,6 +13,7 @@ import (
 	"github.com/cjunks94/nitpick/internal/diff"
 	"github.com/cjunks94/nitpick/internal/prompt"
 	"github.com/cjunks94/nitpick/internal/secrets"
+	"github.com/cjunks94/nitpick/internal/text"
 )
 
 // flexInt accepts JSON numbers OR strings convertible to int. Anthropic
@@ -401,9 +402,9 @@ func renderUserMessage(req ReviewRequest) string {
 	return b.String()
 }
 
+// truncate caps s on a rune boundary: the result is JSON-encoded into the
+// API request (prior-finding bodies) and the log stream, where a split rune
+// would become U+FFFD.
 func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "…"
+	return text.Truncate(s, n, "…")
 }

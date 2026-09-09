@@ -7,10 +7,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"regexp"
 	"sync"
 	"time"
-	"unicode/utf8"
+
+	"github.com/cjunks94/nitpick/internal/secrets"
+	"github.com/cjunks94/nitpick/internal/text"
 )
 
 // InstallationTokenSource mints + caches installation tokens. Tokens are
@@ -111,20 +112,11 @@ func (s *InstallationTokenSource) Token(ctx context.Context, installationID int6
 	return out.Token, nil
 }
 
-// ghsTokenRE matches a GitHub installation access token. The "ghs_" prefix is
-// stable and documented; the suffix is base62 of varying length.
-var ghsTokenRE = regexp.MustCompile(`gh[pousr]_[A-Za-z0-9]{16,}`)
-
-// redactTokens masks any GitHub token found in an API response body and caps
-// the result at n bytes on a rune boundary. Applied to error strings before
-// they reach the log stream.
+// redactTokens masks any credential the secrets package recognises (GitHub
+// tokens included) in an API response body and caps the result at n bytes on
+// a rune boundary. Applied to error strings before they reach the log stream.
+// The token pattern used to be duplicated here; it now has one owner.
 func redactTokens(body []byte, n int) string {
-	s := ghsTokenRE.ReplaceAllString(string(body), "[REDACTED]")
-	if len(s) <= n {
-		return s
-	}
-	for n > 0 && !utf8.RuneStart(s[n]) {
-		n--
-	}
-	return s[:n] + "..."
+	redacted, _ := secrets.RedactBytes(body)
+	return text.Truncate(string(redacted), n, "...")
 }
