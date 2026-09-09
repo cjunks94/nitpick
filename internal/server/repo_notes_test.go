@@ -68,7 +68,7 @@ func TestFetchRepoConfig_5xxIsGraceful(t *testing.T) {
 		_, _ = w.Write([]byte("github exploded"))
 	}))
 	defer srv.Close()
-	client := &ghc.HTTPClient{BaseURL: srv.URL, Token: "test", HTTPClient: srv.Client()}
+	client := &ghc.HTTPClient{BaseURL: srv.URL, Token: "test", HTTPClient: srv.Client(), MaxAttempts: 1}
 
 	got := fetchRepoConfig(context.Background(), silentLogger(), client, "owner/repo", "abc")
 	if got != nil {

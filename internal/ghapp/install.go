@@ -31,6 +31,10 @@ type cachedToken struct {
 	expiresAt time.Time
 }
 
+// maxTokenResponseBytes caps the token-exchange body. The documented shape is
+// {"token": ..., "expires_at": ..., "permissions": {...}} and is well under 64 KiB.
+const maxTokenResponseBytes = 64 << 10
+
 // NewInstallationTokenSource returns a source wired with reasonable defaults.
 func NewInstallationTokenSource(appID string, key *rsa.PrivateKey) *InstallationTokenSource {
 	return &InstallationTokenSource{
@@ -65,13 +69,22 @@ func (s *InstallationTokenSource) Token(ctx context.Context, installationID int6
 	req.Header.Set("Authorization", "Bearer "+appJWT)
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	req.Header.Set("User-Agent", "nitpick (+https://github.com/cjunks94/nitpick)")
 
 	resp, err := s.HTTPClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("exchange JWT for installation token: %w", err)
 	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
+	defer func() { _ = resp.Body.Close() }()
+	// Capped and checked: the success body is a few hundred bytes, and a read
+	// that fails mid-stream must not be parsed as if it were complete.
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxTokenResponseBytes+1))
+	if err != nil {
+		return "", fmt.Errorf("read installation token response: %w", err)
+	}
+	if len(body) > maxTokenResponseBytes {
+		return "", fmt.Errorf("installation token response exceeds %d bytes", maxTokenResponseBytes)
+	}
 	if resp.StatusCode != http.StatusCreated {
 		// Truncated deliberately: this string is logged, and the success shape
 		// of this endpoint's body is {"token": "ghs_..."}. A future GitHub
