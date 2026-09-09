@@ -70,12 +70,17 @@ Three-run mean per config against the 20 labeled PRs (Haiku v2 prompt; same prom
 | Haiku v2.8 (6 runs, 2026-09-02) | 17.3 | 0.15 | 0.38 | 0.38 | 0.85 | 0.22 | $0.008 |
 | **Sonnet 4.6 v2.8** (3 runs, 2026-09-02) | 6.0 | 0.46 | 0.24 | 0.38 | 0.54 | 0.42 | $0.018 |
 | Haiku v2.8, keyword matcher (3 runs, 2026-09-08) | 14.3 | 0.14 | 0.29 | 0.29 | 0.86 | 0.18 | $0.008 |
+| Sonnet 4.6 v2.8, keyword matcher (3 runs, 2026-09-08) | 5.7 | 0.23 | 0.14 | 0.19 | 0.77 | 0.21 | $0.018 |
 
 Sonnet has the highest F1 (precision-driven) at ~4× Haiku cost. Haiku has the highest useful_recall at $0.007/PR. Both beat the stub floor on F1 by a lot.
 
 v2.8 gate (2026-09-02): Sonnet F1 0.33 → 0.42 on recall(all), precision 0.39 → 0.46, noise 0.61 → 0.54, and the lost #101 finding is back. Haiku moved 0.27 → 0.22 on F1, driven by the #87 line-collision artifact described above; its six v2.8 runs span recall 0.29–0.43, which brackets the v2.7 mean. Shipped on the strength of the production model.
 
 Diff-parser gate (2026-09-08, PR #20, Haiku x3): recall 0.14 / 0.43 / 0.29, mean 0.29 against the v2.8 six-run mean of 0.38 (range 0.29-0.43). Two things make this not a regression signal for the parser change: the 20 fixtures parse byte-identically before and after (sha256 over the parsed hunks), so the model saw the same input; and these are the first runs under the keyword matcher, which rejected a same-line coincidence in run 2 (panoptrain #59: a type-cast complaint on the labeled line 18, not the ignored-timeoutMs bug) that the old matcher would have credited. Treat this row as the Haiku baseline under the new matcher, not as a comparison to the row above it.
+
+Sonnet baseline under the keyword matcher (2026-09-08, three runs after the #117 label was tightened): recall 0.29 / 0.14 / 0.14, precision 0.33 / 0.17 / 0.20. Read it in two parts. (1) Matcher effect: runs 2 and 3 each produced a "const_get raises NameError" finding on the #117 line that the old matcher would have credited; the keyword rule rejected both, and run 1's hit on the same line was the real unintended-constant finding (it used the words "arbitrary" and "whitelist"). Re-scored the old way the three runs would be roughly precision 0.36 / recall 0.29 / F1 0.32. (2) What is left after that is #101 (raw ArgumentError message rendered to the client): Sonnet recovered it in 2 of 3 runs on 2026-09-02 and in 0 of 3 here, with no finding anywhere near line 83. Prompt, model id, and parsed fixtures are identical (parser change verified by digest). Two things did change between the dates: the anthropic-sdk-go bump 1.45 -> 1.70 (PR #9) and ordinary run-to-run variance, which with 7 labels is 0.14 per finding. Not resolved; if #101 stays absent in the next Sonnet sweep, pin the SDK back for one run before blaming the model. Sonnet found #121 (SOQL result held in memory) in all three runs, and only #121 reliably.
+
+Metric quirk surfaced by run 1: Recall (useful) counts hits by the *model's* severity, so a label marked useful that the model reports as critical raises Recall (all) but not Recall (useful). Key by the label's severity if the split is ever used for a decision.
 
 Two lessons worth keeping: (1) **prompt length is a tuning variable** — on a silence-first prompt every added prohibition costs recall, so compress before appending; (2) **the matcher is file+line only**, so a hit can be a different finding on the same line. `eval/REPORT.md` now has a Detail section (PR #14) listing the body of every hit; read it before trusting a recall number that moved by one finding.
 
