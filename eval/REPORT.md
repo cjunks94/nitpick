@@ -1,17 +1,19 @@
 # Eval report — `anthropic-claude-sonnet-4-6`
 
-Cases: 20  ·  Expected findings: 18  ·  Produced: 5
+Cases: 20  ·  Expected findings: 18  ·  Produced: 6
+
+Input: review.Prepare, the production pipeline (secrets redacted line for line; no repo config, so no ignore_paths or escalation)
 
 Matcher: file + line ±3, plus a label keyword in the body (18 of 18 labels carry keywords)
 
 | Metric | Value |
 |---|---|
-| Precision | 0.400 |
+| Precision | 0.333 |
 | Recall (all) | 0.111 |
 | Recall (critical) | 0.000 |
 | Recall (useful) | 0.167 |
-| Noise rate | 0.600 |
-| Avg $/PR | $0.0182 |
+| Noise rate | 0.667 |
+| Avg $/PR | $0.0184 |
 
 ## Per-case
 | PR | Repo | Expected | Hits | Misses | Extras | $ |
@@ -21,19 +23,19 @@ Matcher: file + line ±3, plus a label keyword in the body (18 of 18 labels carr
 | #68 | cjunks94/resume-improvements | 0 | 0 | 0 | 0 | $0.0024 |
 | #44 | cjunks94/panoptrain | 0 | 0 | 0 | 0 | $0.0061 |
 | #4 | cjunks94/hush-hush | 0 | 0 | 0 | 0 | $0.0030 |
-| #29 | cjunks94/agentic-portfolio | 1 | 0 | 1 | 0 | $0.0152 |
-| #25 | cjunks94/agentic-portfolio | 1 | 0 | 1 | 0 | $0.0205 |
+| #29 | cjunks94/agentic-portfolio | 1 | 0 | 1 | 0 | $0.0151 |
+| #25 | cjunks94/agentic-portfolio | 1 | 0 | 1 | 0 | $0.0203 |
 | #56 | cjunks94/panoptrain | 3 | 0 | 3 | 0 | $0.0921 |
-| #121 | cjunks94/exportee-rails | 3 | 1 | 2 | 1 | $0.0303 |
-| #101 | cjunks94/exportee-rails | 2 | 1 | 1 | 0 | $0.0130 |
+| #121 | cjunks94/exportee-rails | 3 | 2 | 1 | 0 | $0.0302 |
+| #101 | cjunks94/exportee-rails | 2 | 0 | 2 | 0 | $0.0118 |
 | #28 | cjunks94/agentic-portfolio | 0 | 0 | 0 | 0 | $0.0047 |
 | #27 | cjunks94/agentic-portfolio | 0 | 0 | 0 | 0 | $0.0057 |
 | #59 | cjunks94/panoptrain | 2 | 0 | 2 | 0 | $0.0136 |
 | #54 | cjunks94/panoptrain | 2 | 0 | 2 | 0 | $0.0369 |
-| #117 | cjunks94/exportee-rails | 3 | 0 | 3 | 1 | $0.0195 |
+| #117 | cjunks94/exportee-rails | 3 | 0 | 3 | 3 | $0.0245 |
 | #69 | cjunks94/resume-improvements | 0 | 0 | 0 | 0 | $0.0777 |
 | #64 | cjunks94/resume-improvements | 0 | 0 | 0 | 0 | $0.0018 |
-| #57 | cjunks94/resume-improvements | 0 | 0 | 0 | 1 | $0.0037 |
+| #57 | cjunks94/resume-improvements | 0 | 0 | 0 | 1 | $0.0040 |
 | #10 | cjunks94/hush-hush | 0 | 0 | 0 | 0 | $0.0087 |
 | #9 | cjunks94/hush-hush | 0 | 0 | 0 | 0 | $0.0010 |
 
@@ -54,13 +56,12 @@ Matcher: file + line ±3, plus a label keyword in the body (18 of 18 labels carr
 - MISS `packages/server/src/services/taf-poller.ts:74` [useful/correctness] Number("") is 0 and passes isFinite, so upstream's empty-string visib (present on 5 overlay groups in the fixture) parses to 0 sm instead of the documented null; needs an explicit blank check before the numeric fallthrough
 
 ### #121 cjunks94/exportee-rails
-- HIT `app/services/sources/salesforce_adapter.rb:45` [useful/performance] The `extract` method accumulates all records in memory via `rows << normalize_record(record)` before returning. For large Salesforce result sets (which Restforce auto-paginates), this can exhaust memory; the caller gets no backpressure. Since `extract_streaming` delegates to `extract`, neither path streams. This is a known trade-off but worth documenting as a known limitation or adding a size guard.
+- HIT `app/services/sources/salesforce_adapter.rb:45` [useful/performance / unbounded accumulation] The `extract` method accumulates all records into a `rows` array in memory before returning. For large Salesforce result sets (which auto-paginate via Restforce's Faraday-backed lazy enumerator), this can exhaust heap. Since `extract_streaming` delegates to `extract` unchanged, there is no actual streaming path; callers expecting incremental processing will block until all pages are fetched and held in RAM.
+- HIT `app/services/sources/salesforce_adapter.rb:27` [useful/N+1 API calls] `introspect_schema` issues one `client.describe(sobject["name"])` call per queryable object. A large Salesforce org can have hundreds of queryable SObjects, resulting in hundreds of sequential API requests and likely hitting Salesforce's per-request rate limits. Consider documenting this limitation or batching/caching describe results.
 - MISS `app/services/sources/salesforce_adapter.rb:66` [critical/correctness] explicit api_version: nil overrides Restforce's default in its options merge (concerns/base.rb merge!), so a connection that omits the documented-optional key hits /services/data/v/... and 404s on every call; specs stub Restforce.new so they can't see it
-- MISS `app/services/sources/salesforce_adapter.rb:27` [useful/perf] introspect_schema describes every queryable sobject in a sequential loop: hundreds of HTTP calls per introspection on a stock org, eating the daily API allocation; batch via composite describe or describe lazily
-- EXTRA `app/services/sources/salesforce_adapter.rb:74` [useful/correctness] The `credentials` fallback `connection.connection_config.fetch("credentials", config)` silently falls back to the entire `config` hash when the `credentials` key is absent. This means `credentials["username"]`, `credentials["client_id"]`, etc. would all be `nil` for connections without a nested `credentials` key, producing a confusing auth failure rather than a clear configuration error.
 
 ### #101 cjunks94/exportee-rails
-- HIT `app/controllers/api/v1/base_controller.rb:82` [useful/security] Passing `exception.message` directly from an ArgumentError into the API response leaks internal Ruby error messages to clients. Prefer a safe, generic message unless ArgumentError is only ever raised explicitly with sanitized messages in your codebase.
+- MISS `app/controllers/api/v1/base_controller.rb:83` [useful/security] bad_request_with_message renders raw exception.message from ArgumentError; risks leaking internal context (CLAUDE.md: error messages must not leak internal details)
 - MISS `app/controllers/api/v1/base_controller.rb:13` [useful/correctness] rescuing ArgumentError globally converts programmer errors (wrong arity, Integer('x'), Pagy overflow) into client-facing 400s and hides real bugs from error tracking; rescue the specific enum-assignment case instead
 
 ### #59 cjunks94/panoptrain
@@ -75,7 +76,9 @@ Matcher: file + line ±3, plus a label keyword in the body (18 of 18 labels carr
 - MISS `app/services/transforms/data_frame_pipeline.rb:100` [useful/security] const_get with widget_name from YAML config can resolve to unintended constants; safer to dispatch via an explicit widget→class hash
 - MISS `app/services/exports/executor.rb:25` [useful/correctness] Polars branch times widget transforms inside the write_ms block while legacy counts them in transform_ms, so the metrics the README advertises for A/B comparison are apples-to-oranges
 - MISS `app/services/transforms/data_frame_pipeline.rb:27` [critical/correctness] DataFrame.new(rows) infers dtypes from the first 100 rows (polars-df N_INFER_DEFAULT); a column that is nil or a different type in those rows and populated later raises a ComputeError and fails the run, order-dependent; pass infer_schema_length: nil or an explicit schema
-- EXTRA `app/services/transforms/data_frame_pipeline.rb:101` [critical/error handling] If `widget_name` is not a known constant under `Widgets::Builtins`, `const_get` raises `NameError` rather than gracefully falling back. There is no rescue around the `const_get` call, so an unknown or mistyped widget name will propagate an unhandled exception instead of silently skipping or logging.
+- EXTRA `app/services/transforms/data_frame_pipeline.rb:101` [critical/] If `widget_name` is not a known constant under `Widgets::Builtins`, `const_get` raises `NameError`, which would surface as an unhandled exception instead of a graceful fallback. There is no rescue around `const_get` before the row-by-row transformation is attempted.
+- EXTRA `app/services/transforms/data_frame_pipeline.rb:104` [useful/] When `transformed` is empty after `filter_map`, `df.clear` preserves the original DataFrame schema, but when building a new `Polars::DataFrame.new(transformed)` from a non-empty result set the schema is inferred fresh from the Ruby hashes. If the fallback widget alters the column set (e.g. adds columns), subsequent Polars operations chained after this step will see a different schema than expected, which can silently produce wrong output or raise at the next `select`/`rename` step.
+- EXTRA `app/services/exports/executor.rb:92` [useful/] `result[:bytes_written]` is compared against `max_upload_bytes` after the CSV has already been written to the tempfile and `export_run.artifact.attach` has not yet run — but if the check fails the file is already on disk. That is acceptable, but the `ArtifactTooLarge` raise happens before the artifact is attached, so the run will fail cleanly. However the tempfile `ensure` block closes and unlinks it correctly, so no resource leak. The only real gap: the size check happens after the Polars write but there is no equivalent guard in the `polars_transform_and_write` path for the Active Storage attach byte limit that may also exist upstream — worth confirming there is no double-enforcement that would be inconsistent with the legacy path's check timing.
 
 ### #57 cjunks94/resume-improvements
-- EXTRA `.github/workflows/canary-build.yml:23` [useful/nonexistent action version] actions/checkout@v6 does not exist; the latest stable major version is v4. This will cause all workflow jobs to fail at the checkout step.
+- EXTRA `.github/workflows/canary-build.yml:23` [useful/nonexistent-action-version] actions/checkout@v6 does not exist; the latest major version is v4. Bumping to a nonexistent tag will cause all jobs referencing it to fail at the 'uses' resolution step.
