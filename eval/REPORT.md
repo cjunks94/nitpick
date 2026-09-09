@@ -1,68 +1,65 @@
 # Eval report — `anthropic-claude-opus-5`
 
-Cases: 20  ·  Expected findings: 18  ·  Produced: 8
+Cases: 20  ·  Expected findings: 18  ·  Produced: 5
 
 Input: review.Prepare, the production pipeline (secrets redacted line for line; no repo config, so no ignore_paths or escalation)
 
-Context: off — diff only
+Context: on — 56 whole file(s) attached across 20 case(s) from the committed snapshots (review.ContextCandidates / AttachContext, as serve)
 
 Matcher: file + line ±3, plus a label keyword in the body (18 of 18 labels carry keywords)
 
 | Metric | Value |
 |---|---|
-| Precision | 0.750 |
-| Recall (all) | 0.333 |
+| Precision | 1.000 |
+| Recall (all) | 0.278 |
 | Recall (critical) | 0.000 |
-| Recall (useful) | 0.500 |
-| Noise rate | 0.250 |
-| Avg $/PR | $0.0577 |
+| Recall (useful) | 0.417 |
+| Noise rate | 0.000 |
+| Avg $/PR | $0.1091 |
 
 ## Per-case
 | PR | Repo | Expected | Hits | Misses | Extras | $ |
 |---|---|---|---|---|---|---|
-| #87 | cjunks94/resume-improvements | 1 | 0 | 1 | 0 | $0.0235 |
-| #82 | cjunks94/resume-improvements | 0 | 0 | 0 | 0 | $0.0167 |
-| #68 | cjunks94/resume-improvements | 0 | 0 | 0 | 1 | $0.0289 |
-| #44 | cjunks94/panoptrain | 0 | 0 | 0 | 0 | $0.0307 |
-| #4 | cjunks94/hush-hush | 0 | 0 | 0 | 0 | $0.0101 |
-| #29 | cjunks94/agentic-portfolio | 1 | 0 | 1 | 0 | $0.0420 |
-| #25 | cjunks94/agentic-portfolio | 1 | 1 | 0 | 0 | $0.1015 |
-| #56 | cjunks94/panoptrain | 3 | 2 | 1 | 0 | $0.2349 |
-| #121 | cjunks94/exportee-rails | 3 | 2 | 1 | 0 | $0.1055 |
-| #101 | cjunks94/exportee-rails | 2 | 0 | 2 | 0 | $0.0483 |
-| #28 | cjunks94/agentic-portfolio | 0 | 0 | 0 | 0 | $0.0106 |
-| #27 | cjunks94/agentic-portfolio | 0 | 0 | 0 | 0 | $0.0124 |
-| #59 | cjunks94/panoptrain | 2 | 0 | 2 | 0 | $0.1086 |
-| #54 | cjunks94/panoptrain | 2 | 0 | 2 | 0 | $0.1228 |
-| #117 | cjunks94/exportee-rails | 3 | 1 | 2 | 1 | $0.0820 |
-| #69 | cjunks94/resume-improvements | 0 | 0 | 0 | 0 | $0.1465 |
-| #64 | cjunks94/resume-improvements | 0 | 0 | 0 | 0 | $0.0043 |
-| #57 | cjunks94/resume-improvements | 0 | 0 | 0 | 0 | $0.0060 |
-| #10 | cjunks94/hush-hush | 0 | 0 | 0 | 0 | $0.0163 |
-| #9 | cjunks94/hush-hush | 0 | 0 | 0 | 0 | $0.0026 |
+| #87 | cjunks94/resume-improvements | 1 | 0 | 1 | 0 | $0.0592 |
+| #82 | cjunks94/resume-improvements | 0 | 0 | 0 | 0 | $0.0857 |
+| #68 | cjunks94/resume-improvements | 0 | 0 | 0 | 0 | $0.0150 |
+| #44 | cjunks94/panoptrain | 0 | 0 | 0 | 0 | $0.1389 |
+| #4 | cjunks94/hush-hush | 0 | 0 | 0 | 0 | $0.0894 |
+| #29 | cjunks94/agentic-portfolio | 1 | 0 | 1 | 0 | $0.2180 |
+| #25 | cjunks94/agentic-portfolio | 1 | 1 | 0 | 0 | $0.2114 |
+| #56 | cjunks94/panoptrain | 3 | 2 | 1 | 0 | $0.3189 |
+| #121 | cjunks94/exportee-rails | 3 | 2 | 1 | 0 | $0.1501 |
+| #101 | cjunks94/exportee-rails | 2 | 0 | 2 | 0 | $0.0777 |
+| #28 | cjunks94/agentic-portfolio | 0 | 0 | 0 | 0 | $0.0405 |
+| #27 | cjunks94/agentic-portfolio | 0 | 0 | 0 | 0 | $0.0236 |
+| #59 | cjunks94/panoptrain | 2 | 0 | 2 | 0 | $0.1438 |
+| #54 | cjunks94/panoptrain | 2 | 0 | 2 | 0 | $0.2014 |
+| #117 | cjunks94/exportee-rails | 3 | 0 | 3 | 0 | $0.1607 |
+| #69 | cjunks94/resume-improvements | 0 | 0 | 0 | 0 | $0.1489 |
+| #64 | cjunks94/resume-improvements | 0 | 0 | 0 | 0 | $0.0485 |
+| #57 | cjunks94/resume-improvements | 0 | 0 | 0 | 0 | $0.0204 |
+| #10 | cjunks94/hush-hush | 0 | 0 | 0 | 0 | $0.0183 |
+| #9 | cjunks94/hush-hush | 0 | 0 | 0 | 0 | $0.0109 |
 
 ## Detail
 
 ### #87 cjunks94/resume-improvements
 - MISS `particle-scene.js:65` [useful/defensive] isLightBg parses hex and rgb()/rgba() but not hsl()/hsla(); browsers may serialize --c-bg as hsl() so light-theme detection silently breaks
 
-### #68 cjunks94/resume-improvements
-- EXTRA `.github/workflows/deploy.yml:87` [useful/correctness] Gating on github.actor is unreliable for Dependabot PRs: on a manual re-run, github.actor becomes the user who triggered the re-run, so the deploy-staging guard stops matching and the job runs without ACTIONS_DEPLOY_KEY (and the test job at line 31 gets skipped). Keying off github.event.pull_request.user.login (or the head ref prefix) is stable across re-runs.
-
 ### #29 cjunks94/agentic-portfolio
 - MISS `src/agentic_portfolio/web/api.py:589` [useful/security] _make_broker docstring documents demo_mode fail-safe contract but doesn't enforce it; future LiveBroker addition could bypass demo gate without a regression check
 
 ### #25 cjunks94/agentic-portfolio
-- HIT `src/agentic_portfolio/web/runs.py:82` [useful/correctness] try_start now refuses any start while the persisted status is "running", and _execute_run no longer calls mark_started, so a process crash or hard restart mid-run leaves the state file stuck at "running" and every subsequent POST /api/run returns 409 forever (request_cancel only sets a flag that a dead runner will never read). Consider treating a "running" record older than some threshold (via started_at) as stale, or reconciling the tracker file at app startup.
+- HIT `src/agentic_portfolio/web/runs.py:82` [useful/correctness] try_start treats any persisted status == "running" as a live run, but current_run.json survives process restarts: if the app is killed mid-run (deploy, SIGTERM, OOM) the file is never transitioned to completed/failed and every subsequent POST /api/run returns 409 and every cron fire is skipped, permanently, with no recovery path. Consider treating a "running" record whose started_at is older than some max-run age as stale and reclaiming the slot.
 
 ### #56 cjunks94/panoptrain
-- HIT `packages/client/src/lib/tafCurrentPeriod.ts:27` [useful/order-dependence] The loop takes the last base period in array order with timeFrom <= now, so it silently returns the wrong period if forecasts are not sorted ascending by timeFrom; the parser's deriveCeiling explicitly notes the upstream ordering contract is undocumented. Track the maximum timeFrom instead of relying on array order.
-- HIT `packages/server/src/services/taf-poller.ts:74` [useful/correctness] parseVisibility falls through to Number(visib) for empty-string visibility, and Number("") is 0, so groups the upstream ships with "visib":"" (present in the new aviationweather-taf.json fixture for TEMPO/PROB groups) parse as visibilitySm: 0 instead of null, which the type doc says means "doesn't change vis". Add an explicit empty/whitespace-string guard returning null.
+- HIT `packages/client/src/lib/tafCurrentPeriod.ts:28` [useful/correctness] The comment promises "latest base period whose start is at or before now", but the loop just keeps the last array element satisfying timeFrom <= now, so an out-of-order forecasts array yields the wrong active period. Track the maximum timeFrom instead of relying on upstream ordering — the same undocumented-order concern the poller's deriveCeiling explicitly defends against.
+- HIT `packages/server/src/services/taf-poller.ts:74` [useful/correctness] parseVisibility returns 0 for an empty string because Number("") === 0 passes the isFinite check, so a group with "visib":"" (present in the committed aviationweather-taf.json fixture for PROB/TEMPO groups) parses as 0 statute miles instead of null — the popup would render a dangerously wrong "0 sm". Treat empty/whitespace-only strings as null before the numeric coercion.
 - MISS `packages/server/src/services/taf-poller.ts:95` [critical/correctness] deriveCeiling matches raw-TAF token "VV" but the JSON feed encodes obscured sky as cover "OVX" with base null and the height in the sibling vertVis field; fixture has 3 such groups; ceilingFt is null in the LIFR fog case
 
 ### #121 cjunks94/exportee-rails
-- HIT `app/services/sources/salesforce_adapter.rb:66` [useful/contract drift] The class docs say api_version is optional and "defaults to Restforce default", but config.fetch("api_version", nil) always passes the key, and an explicit nil overrides the gem's configured default when options are merged, producing malformed API paths. Only include the key when a value is present (e.g. build the options hash and drop nil entries).
-- HIT `app/services/sources/salesforce_adapter.rb:27` [useful/performance] introspect_schema issues one describe API call per queryable sobject; a real Salesforce org commonly exposes several hundred queryable objects, so this is an unbounded N+1 of HTTP calls that will be slow and can exhaust the org's daily API limits. Consider limiting to a configured object list or using a bulk/composite describe.
+- HIT `app/services/sources/salesforce_adapter.rb:66` [useful/correctness] When "api_version" is absent from the config this passes api_version: nil to Restforce.new, which overrides Restforce's configured default rather than falling back to it (the docstring claims it "defaults to Restforce default"). Omit the key entirely when the config value is nil instead of passing nil.
+- HIT `app/services/sources/salesforce_adapter.rb:26` [useful/performance] introspect_schema issues one describe API call per queryable object; a typical Salesforce org exposes several hundred queryable sobjects, so a single introspection fires hundreds of sequential REST calls and can exhaust the org's daily API quota or time out the job. Consider using the composite/batch describe endpoint or restricting to a configured subset of objects.
 - MISS `app/services/sources/salesforce_adapter.rb:45` [useful/perf] extract accumulates entire SOQL result in memory; a multi-million-row Account export would OOM the worker
 
 ### #101 cjunks94/exportee-rails
@@ -78,7 +75,6 @@ Matcher: file + line ±3, plus a label keyword in the body (18 of 18 labels carr
 - MISS `packages/client/src/hooks/useTrainFeatures.ts:94` [critical/correctness] mode-reset deliberately leaves shapeIndexRef alone, but the routes-build effect early-returns on null routeShapes, so on a cache-miss flip (or a failed routes fetch) train polls for the new mode are pathed against the previous mode's index; subway/LIRR routeIds collide so trains land on the wrong geometry (fixed upstream in panoptrain #59)
 
 ### #117 cjunks94/exportee-rails
-- HIT `app/services/exports/executor.rb:26` [useful/metrics-correctness] In the Polars path, `transform_ms` only times `Mappings::Applicator`, while the widget transforms are folded into `write_ms` via `polars_transform_and_write`. This makes the per-stage metrics documented in this PR (`transform_ms`, `write_ms`) non-comparable between the Polars and legacy paths, defeating the A/B comparison the toggles are meant to support; consider timing the transform and write phases separately inside the Polars path.
 - MISS `app/services/transforms/data_frame_pipeline.rb:100` [useful/security] const_get with widget_name from YAML config can resolve to unintended constants; safer to dispatch via an explicit widget→class hash
+- MISS `app/services/exports/executor.rb:25` [useful/correctness] Polars branch times widget transforms inside the write_ms block while legacy counts them in transform_ms, so the metrics the README advertises for A/B comparison are apples-to-oranges
 - MISS `app/services/transforms/data_frame_pipeline.rb:27` [critical/correctness] DataFrame.new(rows) infers dtypes from the first 100 rows (polars-df N_INFER_DEFAULT); a column that is nil or a different type in those rows and populated later raises a ComputeError and fails the run, order-dependent; pass infer_schema_length: nil or an explicit schema
-- EXTRA `app/services/exports/executor.rb:105` [useful/correctness] `result` is returned with `artifact_url` set to the tempfile path (set by `DataFramePipeline.call_and_write_csv`), but the `ensure` block unlinks that tempfile immediately, so any persisted `artifact_url` points at a deleted file. When `dest_path` is present it should be substituted into the result before returning, matching what the legacy write path records.
