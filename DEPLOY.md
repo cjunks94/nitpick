@@ -72,7 +72,7 @@ In the Railway dashboard for the new service:
 | `GITHUB_APP_PRIVATE_KEY` | contents of the `.pem` file | Paste the full multi-line PEM including `-----BEGIN/END-----` lines. Railway handles multi-line variables. |
 | `GITHUB_WEBHOOK_SECRET` | the `openssl rand -hex 32` value from step 1 | Same value as on the App. |
 | `NITPICK_CONTEXT_FILES` | _(optional)_ | `1` to attach up to 5 whole files referenced by the diff to each review. Off by default: with it on, Sonnet hit 0 of 18 eval labels in three runs at 2.4x the cost (HANDOFF.md, 2026-09-09). Leave unset until the prompt's context handling is re-tuned. |
-| `NITPICK_MODEL` | _(optional)_ | `claude-sonnet-4-6` if you want higher precision per PR; default `claude-haiku-4-5` otherwise. Only those two ids are accepted — any other value makes `serve` exit at startup with `unsupported model`. |
+| `NITPICK_MODEL` | _(optional)_ | Default `claude-haiku-4-5`. Accepted: `claude-haiku-4-5`, `claude-sonnet-4-6`, `claude-sonnet-5`, `claude-opus-5`; any other value makes `serve` exit at startup with `unsupported model`. Measured on the 18-label eval (HANDOFF.md): Opus 5 finds labels no Sonnet 4.6 run found, at $0.058 per PR diff-only. |
 
 Railway sets `PORT` automatically — don't override.
 
