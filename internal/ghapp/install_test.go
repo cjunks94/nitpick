@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cjunks94/nitpick/internal/secrets"
 	"github.com/golang-jwt/jwt/v5"
 )
 
@@ -73,8 +74,8 @@ func TestRedactTokens(t *testing.T) {
 			if strings.Contains(got, tt.token) {
 				t.Errorf("token survived redaction: %s", got)
 			}
-			if !strings.Contains(got, "[REDACTED]") {
-				t.Errorf("expected a [REDACTED] marker, got: %s", got)
+			if !strings.Contains(got, secrets.Placeholder) {
+				t.Errorf("expected the %s marker, got: %s", secrets.Placeholder, got)
 			}
 		})
 	}
@@ -269,7 +270,7 @@ func TestInstallationTokenSource_Non201WithTokenIsRedacted(t *testing.T) {
 	if !strings.Contains(msg, "HTTP 200") {
 		t.Errorf("error should name the status, got: %s", msg)
 	}
-	if !strings.Contains(msg, "[REDACTED]") {
+	if !strings.Contains(msg, secrets.Placeholder) {
 		t.Errorf("error should carry a redaction marker, got: %s", msg)
 	}
 	if strings.Contains(msg, fakeToken("ghs_")) {

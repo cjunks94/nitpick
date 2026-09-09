@@ -9,9 +9,9 @@ import (
 	"net/url"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/cjunks94/nitpick/internal/provider"
+	"github.com/cjunks94/nitpick/internal/text"
 )
 
 // ErrFileNotFound is wrapped by FetchFile when the GitHub Contents API
@@ -409,21 +409,11 @@ func (c *HTTPClient) PostReview(ctx context.Context, repo string, pr int, commen
 // strings end up in error messages that are JSON-encoded into slog output; a
 // half-rune would render as U+FFFD noise at best.
 func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return TruncateBytes(s, n) + "..."
+	return text.Truncate(s, n, "...")
 }
 
-// TruncateBytes returns the longest prefix of s that is at most n bytes and
-// ends on a rune boundary. Exported because the server applies the same cap to
-// .nitpick.yaml context_notes before handing them to the provider.
+// TruncateBytes is text.TruncateBytes, kept exported here because the server
+// applies the same cap to .nitpick.yaml context_notes.
 func TruncateBytes(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	for n > 0 && !utf8.RuneStart(s[n]) {
-		n--
-	}
-	return s[:n]
+	return text.TruncateBytes(s, n)
 }
