@@ -566,8 +566,8 @@ func TestAnthropicReview_RequestShape(t *testing.T) {
 			if tt.guidelines != nil && strings.Contains(string(userJSON), string(tt.guidelines)) {
 				t.Errorf("repo notes leaked into the user turn: %s", userJSON)
 			}
-			if req["max_tokens"] != float64(4096) {
-				t.Errorf("max_tokens = %v, want 4096", req["max_tokens"])
+			if req["max_tokens"] != float64(16000) {
+				t.Errorf("max_tokens = %v, want 16000", req["max_tokens"])
 			}
 		})
 	}
