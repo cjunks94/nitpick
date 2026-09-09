@@ -71,7 +71,7 @@ This is the *one* place we don't skip the measurement loop. Vibes-tuning a promp
 
 ## What's *not* here yet (don't be surprised by absence)
 
-- No coverage threshold. CI uploads to Codecov with `fail_ci_if_error: false` and there is no `codecov.yml`; nothing fails below the parent's 80% target. Whether `main` *requires* the `security` checks to merge is a GitHub ruleset setting, not something in the repo — don't assume it from this file.
+- No `codecov.yml`; Codecov is upload-only with `fail_ci_if_error: false`. The coverage bar is enforced in the workflow itself: the build job fails if `internal/` drops under 80% (`cmd/` and `main.go` are excluded as plumbing). Whether `main` *requires* the `security` checks to merge is a GitHub ruleset setting, not something in the repo — don't assume it from this file.
 - No persistence — `serve` dedup is in-memory.
 - No retry logic on the LLM provider (the SDK has its own).
 - No metrics endpoint — Railway logs are the observability story for now.
