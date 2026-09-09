@@ -1,6 +1,6 @@
 # Eval report — `anthropic-claude-sonnet-4-6`
 
-Cases: 20  ·  Expected findings: 18  ·  Produced: 4
+Cases: 20  ·  Expected findings: 18  ·  Produced: 3
 
 Input: review.Prepare, the production pipeline (secrets redacted line for line; no repo config, so no ignore_paths or escalation)
 
@@ -28,13 +28,13 @@ Matcher: file + line ±3, plus a label keyword in the body (18 of 18 labels carr
 | #29 | cjunks94/agentic-portfolio | 1 | 0 | 1 | 0 | $0.0971 |
 | #25 | cjunks94/agentic-portfolio | 1 | 0 | 1 | 0 | $0.0855 |
 | #56 | cjunks94/panoptrain | 3 | 0 | 3 | 0 | $0.1296 |
-| #121 | cjunks94/exportee-rails | 3 | 0 | 3 | 1 | $0.0480 |
+| #121 | cjunks94/exportee-rails | 3 | 0 | 3 | 1 | $0.0478 |
 | #101 | cjunks94/exportee-rails | 2 | 0 | 2 | 0 | $0.0244 |
 | #28 | cjunks94/agentic-portfolio | 0 | 0 | 0 | 0 | $0.0195 |
 | #27 | cjunks94/agentic-portfolio | 0 | 0 | 0 | 0 | $0.0108 |
 | #59 | cjunks94/panoptrain | 2 | 0 | 2 | 0 | $0.0459 |
 | #54 | cjunks94/panoptrain | 2 | 0 | 2 | 0 | $0.0639 |
-| #117 | cjunks94/exportee-rails | 3 | 0 | 3 | 3 | $0.0487 |
+| #117 | cjunks94/exportee-rails | 3 | 0 | 3 | 2 | $0.0476 |
 | #69 | cjunks94/resume-improvements | 0 | 0 | 0 | 0 | $0.0789 |
 | #64 | cjunks94/resume-improvements | 0 | 0 | 0 | 0 | $0.0206 |
 | #57 | cjunks94/resume-improvements | 0 | 0 | 0 | 0 | $0.0091 |
@@ -61,7 +61,7 @@ Matcher: file + line ±3, plus a label keyword in the body (18 of 18 labels carr
 - MISS `app/services/sources/salesforce_adapter.rb:45` [useful/perf] extract accumulates entire SOQL result in memory; a multi-million-row Account export would OOM the worker
 - MISS `app/services/sources/salesforce_adapter.rb:66` [critical/correctness] explicit api_version: nil overrides Restforce's default in its options merge (concerns/base.rb merge!), so a connection that omits the documented-optional key hits /services/data/v/... and 404s on every call; specs stub Restforce.new so they can't see it
 - MISS `app/services/sources/salesforce_adapter.rb:27` [useful/perf] introspect_schema describes every queryable sobject in a sequential loop: hundreds of HTTP calls per introspection on a stock org, eating the daily API allocation; batch via composite describe or describe lazily
-- EXTRA `app/services/sources/salesforce_adapter.rb:30` [critical/] If `describe["fields"]` is nil (Salesforce returns objects with no fields, or an unexpected response shape), calling `.map` on nil will raise `NoMethodError` which is not caught by the `rescue Restforce::Error, Faraday::Error` clause, so it will bubble up as an unhandled 500 rather than a wrapped `AdapterError`. A nil guard like `(describe["fields"] || []).map` is needed.
+- EXTRA `app/services/sources/salesforce_adapter.rb:30` [useful/correctness] If `describe["fields"]` is nil (e.g. Salesforce returns an object description without a fields key), calling `.map` on it will raise `NoMethodError` and bubble out as an unhandled exception rather than the expected `Sources::AdapterError`. A guard like `(describe["fields"] || []).map` would make this safe.
 
 ### #101 cjunks94/exportee-rails
 - MISS `app/controllers/api/v1/base_controller.rb:83` [useful/security] bad_request_with_message renders raw exception.message from ArgumentError; risks leaking internal context (CLAUDE.md: error messages must not leak internal details)
@@ -79,6 +79,5 @@ Matcher: file + line ±3, plus a label keyword in the body (18 of 18 labels carr
 - MISS `app/services/transforms/data_frame_pipeline.rb:100` [useful/security] const_get with widget_name from YAML config can resolve to unintended constants; safer to dispatch via an explicit widget→class hash
 - MISS `app/services/exports/executor.rb:25` [useful/correctness] Polars branch times widget transforms inside the write_ms block while legacy counts them in transform_ms, so the metrics the README advertises for A/B comparison are apples-to-oranges
 - MISS `app/services/transforms/data_frame_pipeline.rb:27` [critical/correctness] DataFrame.new(rows) infers dtypes from the first 100 rows (polars-df N_INFER_DEFAULT); a column that is nil or a different type in those rows and populated later raises a ComputeError and fails the run, order-dependent; pass infer_schema_length: nil or an explicit schema
-- EXTRA `app/services/transforms/data_frame_pipeline.rb:59` [useful/correctness] When `select_columns` is called with a `keep` list where all columns are absent from the DataFrame, the filtered list is empty and `df.select([])` is called, which may raise a Polars error or return an empty-column frame that breaks subsequent transforms. The `rename` and `redact` cases guard against missing columns but `select_columns` has no guard for the all-absent case.
-- EXTRA `app/services/transforms/data_frame_pipeline.rb:101` [useful/correctness] `Widgets::Builtins.const_get(widget_name.camelize)` will raise `NameError` for any unknown widget name, but the `else` branch is documented as a graceful fallback. This exception is unhandled and will surface as a pipeline failure rather than a skip or a more descriptive error.
-- EXTRA `app/services/exports/executor.rb:92` [useful/correctness] When `rows` is empty, `call_and_write_csv` delegates to `legacy_write` which returns the result of `Destinations::Writers::Csv.write`. That return value is assigned to `result`, but `result[:bytes_written]` is then compared against `max_upload_bytes` on line 92 — if the legacy result hash does not include `:bytes_written` this will raise a `NoMethodError` on `nil`.
+- EXTRA `app/services/transforms/data_frame_pipeline.rb:101` [useful/correctness] If `widget_name.camelize` doesn't match a constant under `Widgets::Builtins`, `const_get` raises `NameError` and bubbles out of the entire pipeline with no rescue. The legacy row-by-row path in `Executor#apply_widgets` has the same gap, so this isn't a regression, but the comment on line 75 says 'fall back to row-by-row for this one transform' implying isolation — a bad widget name actually aborts the whole export run.
+- EXTRA `app/services/transforms/data_frame_pipeline.rb:104` [useful/correctness] When `filter_map` returns an empty array (all rows filtered out by the widget), `df.clear` is returned, which preserves the original schema. But if the first widget in a chain produces an empty DataFrame via `df.clear` and a subsequent widget calls `df.to_hashes`, it returns `[]`, and `Polars::DataFrame.new([])` raises an `ArgumentError` — the chained empty-DataFrame case is not guarded.
