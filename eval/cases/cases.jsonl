@@ -21,7 +21,7 @@
 {"pr":27,"repo":"cjunks94/agentic-portfolio","diff_path":"eval/cases/pr-27.diff","expected":[]}
 {"pr":59,"repo":"cjunks94/panoptrain","diff_path":"eval/cases/pr-59.diff","expected":[{"file":"packages/client/src/lib/scheduleIdle.ts","line":18,"severity":"useful","category":"correctness","keywords":["timeoutMs","1ms","1 ms","ignores the timeout"],"note":"setTimeout fallback hardcodes 1ms and ignores the timeoutMs parameter; docstring promises 'soon-ish' upper bound but fallback fires next tick regardless of caller intent"}]}
 {"pr":54,"repo":"cjunks94/panoptrain","diff_path":"eval/cases/pr-54.diff","expected":[]}
-{"pr":117,"repo":"cjunks94/exportee-rails","diff_path":"eval/cases/pr-117.diff","expected":[{"file":"app/services/transforms/data_frame_pipeline.rb","line":100,"severity":"useful","category":"security","keywords":["const_get","constant","arbitrary class"],"note":"const_get with widget_name from YAML config can resolve to unintended constants; safer to dispatch via an explicit widget→class hash"}]}
+{"pr":117,"repo":"cjunks94/exportee-rails","diff_path":"eval/cases/pr-117.diff","expected":[{"file":"app/services/transforms/data_frame_pipeline.rb","line":100,"severity":"useful","category":"security","keywords":["unintended","arbitrary","any constant","allowlist","allow-list","explicit mapping","explicit hash","lookup table"],"note":"const_get with widget_name from YAML config can resolve to unintended constants; safer to dispatch via an explicit widget→class hash"}]}
 // --- Chores / dep bumps — bot should stay silent ---
 {"pr":69,"repo":"cjunks94/resume-improvements","diff_path":"eval/cases/pr-69.diff","expected":[]}
 {"pr":64,"repo":"cjunks94/resume-improvements","diff_path":"eval/cases/pr-64.diff","expected":[]}
