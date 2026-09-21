@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 # Digest-pinned so a rebuilt tag cannot change the toolchain under us;
 # Dependabot's docker ecosystem moves the digest when the tag is rebuilt.
-FROM golang:1.27-alpine@sha256:cf6fca6641884b8433441b2b0652976f975e1d0fdd26d177eaaf8596087f3125 AS build
+FROM golang:1.27-alpine@sha256:4cb7ac979db5fcc41cae44b2227ba5ab8a51e8807f40d9ba4dee20a0ad960b5b AS build
 WORKDIR /src
 RUN apk add --no-cache git
 COPY go.mod go.sum ./
