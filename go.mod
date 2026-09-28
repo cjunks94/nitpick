@@ -3,8 +3,8 @@ module github.com/cjunks94/nitpick
 go 1.24
 
 require (
-	github.com/anthropics/anthropic-sdk-go v1.71.0
-	github.com/bmatcuk/doublestar/v4 v4.10.0
+	github.com/anthropics/anthropic-sdk-go v1.75.0
+	github.com/bmatcuk/doublestar/v4 v4.10.2
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	gopkg.in/yaml.v3 v3.0.1
 )
